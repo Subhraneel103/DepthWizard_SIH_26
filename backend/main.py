@@ -1,5 +1,6 @@
+from model import cv
 def main():
-    print("Hello from backend!")
+    cv.test()
 
 
 if __name__ == "__main__":
