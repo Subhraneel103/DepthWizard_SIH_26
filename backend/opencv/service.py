@@ -18,8 +18,8 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from model.depth_infer import DepthModel, normalize_for_display, run_depth_pipeline
-from model.preprocess import resize_max_side, tile_image
+from backend.opencv.model.depth_infer import DepthModel, normalize_for_display, run_depth_pipeline
+from backend.opencv.model.preprocess import resize_max_side, tile_image
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20MB — generous for a phone/drone photo; guards against a runaway upload
 TILE_SIZE = 512

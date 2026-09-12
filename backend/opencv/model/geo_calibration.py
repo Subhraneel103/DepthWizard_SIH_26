@@ -21,7 +21,7 @@ called directly with hand-entered elevations, no georeferencing required.
 
 import numpy as np
 
-from calibration import CalibrationFit, fit_scale_shift, sample_at_points
+from backend.opencv.model.calibration import CalibrationFit, fit_scale_shift, sample_at_points
 
 
 class NotGeoreferencedError(ValueError):

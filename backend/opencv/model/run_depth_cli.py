@@ -31,8 +31,8 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from depth_infer import get_model, normalize_for_display, run_depth_pipeline
-from preprocess import load_image_rgb, resize_max_side
+from backend.opencv.model.depth_infer import get_model, normalize_for_display, run_depth_pipeline
+from backend.opencv.model.preprocess import load_image_rgb, resize_max_side
 
 
 def main():

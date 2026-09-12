@@ -14,7 +14,7 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from preprocess import tile_image
+from backend.opencv.model.preprocess import tile_image
 
 ROOT = Path(__file__).resolve().parent.parent
 

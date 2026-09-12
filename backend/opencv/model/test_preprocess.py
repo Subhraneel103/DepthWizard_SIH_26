@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from preprocess import Tile, load_image_rgb, resize_max_side, stitch_tiles, tile_image
+from backend.opencv.model.preprocess import Tile, load_image_rgb, resize_max_side, stitch_tiles, tile_image
 
 
 def make_synthetic_image(h: int, w: int) -> np.ndarray:

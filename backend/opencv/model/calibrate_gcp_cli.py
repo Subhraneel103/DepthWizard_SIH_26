@@ -35,7 +35,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from calibration import apply_calibration, fit_scale_shift, sample_at_points
+from backend.opencv.model.calibration import apply_calibration, fit_scale_shift, sample_at_points
 
 
 def main():

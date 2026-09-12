@@ -43,8 +43,8 @@ from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from model.depth_infer import HFDepthAnythingV2, get_model
-from service import (
+from backend.opencv.model.depth_infer import HFDepthAnythingV2, get_model
+from backend.opencv.service import (
     InvalidImageError,
     UploadTooLargeError,
     encode_depth_npy,

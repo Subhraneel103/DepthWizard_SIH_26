@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from depth_infer import DummyDepthModel, run_depth_pipeline, to_relative_elevation
+from backend.opencv.model.depth_infer import DummyDepthModel, run_depth_pipeline, to_relative_elevation
 
 
 def make_synthetic_image(h: int, w: int) -> np.ndarray:
