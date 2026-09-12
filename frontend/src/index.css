@@ -1,0 +1,74 @@
+@import "tailwindcss";
+
+/* ═══════════════════════════════════════════════════════
+   DEPTHWIZARD — Design Tokens
+   Palette: Black / Gray / White — strictly monochrome
+═══════════════════════════════════════════════════════ */
+@theme {
+  --color-background:    #0a0a0a;
+  --color-surface:       #141414;
+  --color-surface-raised:#1a1a1a;
+  --color-border:        #262626;
+  --color-border-subtle: #1c1c1c;
+
+  --color-text-primary:  #ffffff;
+  --color-text-secondary:#a1a1aa;
+  --color-text-muted:    #52525b;
+
+  --font-sans: "Geist", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, Consolas, monospace;
+}
+
+/* ═══════════════════════════════════════════════════════
+   Global Resets
+═══════════════════════════════════════════════════════ */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  scroll-behavior: smooth;
+  color-scheme: dark;
+}
+
+body {
+  background-color: #0a0a0a;
+  color: #ffffff;
+  font-family: "Geist", system-ui, -apple-system, sans-serif;
+  min-height: 100svh;
+  overflow-x: hidden;
+}
+
+#root {
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+/* ── Ambient orb drift animations ── */
+@keyframes orb-drift-1 {
+  0%   { transform: translate(0px, 0px)   scale(1);    }
+  33%  { transform: translate(50px,-35px) scale(1.04); }
+  66%  { transform: translate(-25px,30px) scale(0.97); }
+  100% { transform: translate(0px, 0px)   scale(1);    }
+}
+@keyframes orb-drift-2 {
+  0%   { transform: translate(0px, 0px)    scale(1);    }
+  40%  { transform: translate(-55px, 28px) scale(1.05); }
+  75%  { transform: translate(35px, -42px) scale(0.96); }
+  100% { transform: translate(0px, 0px)    scale(1);    }
+}
+.orb-1 { animation: orb-drift-1 20s ease-in-out infinite; }
+.orb-2 { animation: orb-drift-2 25s ease-in-out infinite; }
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar        { width: 5px; }
+::-webkit-scrollbar-track  { background: transparent; }
+::-webkit-scrollbar-thumb  { background: #262626; }
+::-webkit-scrollbar-thumb:hover { background: #3f3f3f; }
