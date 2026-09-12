@@ -8,6 +8,7 @@ import { clerkMiddleware } from "@clerk/express";
 import projectRouter from "./routes/project.route.js";
 import imageRouter from "./routes/image.route.js"; 
 import jobRouter from "./routes/job.route.js"; 
+import dsmRouter from "./routes/dsm.route.js";
 
 // Middleware imports
 import { errorHandler } from "./middlewares/error.middleware.js";
@@ -40,6 +41,7 @@ app.use(clerkMiddleware());
 app.use("/api/projects", projectRouter);
 app.use("/api/images", imageRouter);
 app.use("/api/jobs", jobRouter); 
+app.use("/api/dsm-results", dsmRouter);
 
 
 // 6. 404 Route Handler
