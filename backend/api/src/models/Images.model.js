@@ -12,6 +12,19 @@ const gcpSubSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
+const annotationSubSchema = new mongoose.Schema({
+  label: { type: String, required: true },
+  type: { 
+    type: String, 
+    enum: ['point', 'polygon', 'polyline', 'box'], 
+    default: 'point' 
+  },
+  coordinates: { type: mongoose.Schema.Types.Mixed, required: true },
+  color: { type: String, default: '#ff0000' },
+  notes: { type: String, default: '' },
+  createdAt: { type: Date, default: Date.now }
+});
+
 const imageSchema = new mongoose.Schema({
   project: {
     type: mongoose.Schema.Types.ObjectId,
@@ -36,6 +49,7 @@ const imageSchema = new mongoose.Schema({
   },
   resolution: { type: Number, default: 0.5 }, // 0.5m GSD
   gcps: [gcpSubSchema],
+  annotations: [annotationSubSchema],
   uploadedAt: { type: Date, default: Date.now },
 });
 
