@@ -2,3 +2,4 @@ backend/.venv
 backend/opencv/__pycache__
 backend/opencv/model/__pycache__
 backend/opencv/.venv
+backend/api/.env
