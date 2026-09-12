@@ -18,9 +18,12 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from backend.opencv.model.depth_infer import DummyDepthModel
-from backend.opencv.service import (
+_OPENCV_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(_OPENCV_ROOT) not in sys.path:
+    sys.path.insert(0, str(_OPENCV_ROOT))
+
+from model.depth_infer import DummyDepthModel
+from service import (
     DepthResult,
     InvalidImageError,
     UploadTooLargeError,

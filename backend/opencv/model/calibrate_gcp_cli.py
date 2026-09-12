@@ -34,8 +34,16 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from backend.opencv.model.calibration import apply_calibration, fit_scale_shift, sample_at_points
+_CURRENT_DIR = Path(__file__).resolve().parent
+_OPENCV_ROOT = _CURRENT_DIR.parent
+for _p in (str(_OPENCV_ROOT), str(_CURRENT_DIR)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+try:
+    from model.calibration import apply_calibration, fit_scale_shift, sample_at_points
+except ImportError:
+    from calibration import apply_calibration, fit_scale_shift, sample_at_points
 
 
 def main():

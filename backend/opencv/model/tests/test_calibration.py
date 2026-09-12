@@ -8,8 +8,11 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from backend.opencv.model.calibration import (
+_OPENCV_ROOT = str(Path(__file__).resolve().parent.parent.parent)
+if _OPENCV_ROOT not in sys.path:
+    sys.path.insert(0, _OPENCV_ROOT)
+
+from model.calibration import (
     CalibrationFit,
     InsufficientPointsError,
     apply_calibration,

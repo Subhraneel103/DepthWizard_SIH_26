@@ -13,13 +13,16 @@ in tests/test_service.py without needing FastAPI on the path at all.
 
 import io
 import time
+import zipfile
 from dataclasses import dataclass
 
 import cv2
 import numpy as np
 
-from backend.opencv.model.depth_infer import DepthModel, normalize_for_display, run_depth_pipeline
-from backend.opencv.model.preprocess import resize_max_side, tile_image
+from model.depth_infer import DepthModel, normalize_for_display, run_depth_pipeline
+from model.mesh_export import build_mesh_zip
+from model.mesh_geometry import build_heightfield_geometry, downsample_elevation_for_mesh
+from model.preprocess import resize_max_side, tile_image
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20MB — generous for a phone/drone photo; guards against a runaway upload
 TILE_SIZE = 512
@@ -103,3 +106,71 @@ def encode_depth_png(depth: np.ndarray) -> bytes:
     if not ok:
         raise RuntimeError("PNG encoding failed unexpectedly")
     return buf.tobytes()
+
+
+MAX_MESH_GRID_SIZE = 300  # cap vertex count at 300*300 = 90k verts, 180k triangles — renders fine in Three.js
+
+
+@dataclass
+class MeshResult:
+    zip_bytes: bytes
+    vertex_count: int
+    face_count: int
+    processing_ms: int
+
+
+def process_mesh_request(
+    elevation_bytes: bytes,
+    texture_bytes: bytes,
+    pixel_size_x: float = 1.0,
+    pixel_size_z: float = 1.0,
+    z_exaggeration: float = 1.0,
+    geo_transform=None,
+    geo_crs=None,
+    include_obj: bool = False,
+) -> MeshResult:
+    """The Stage 4 equivalent of process_image_bytes: raw bytes in
+    (a calibrated elevation .npy from Stage 3, and a texture image), a
+    zip file out (mesh.glb + dsm.tif, optionally + OBJ files).
+
+    elevation_bytes: a .npy file, exactly what Stage 3's calibration
+    produces (float32, absolute elevation, NOT the normalized display PNG —
+    see calibration.CalibrationFit's docstring on why that distinction matters).
+    texture_bytes: a JPG/PNG image, typically the same photo depth was run on.
+    """
+    start = time.monotonic()
+
+    elevation = np.load(io.BytesIO(elevation_bytes))
+    if elevation.ndim != 2:
+        raise InvalidImageError(f"Expected a 2D elevation array, got shape {elevation.shape}")
+
+    np_buffer = np.frombuffer(texture_bytes, dtype=np.uint8)
+    texture_bgr = cv2.imdecode(np_buffer, cv2.IMREAD_COLOR)
+    if texture_bgr is None:
+        raise InvalidImageError("Could not decode texture image bytes — is this a valid JPG/PNG?")
+    texture_rgb = cv2.cvtColor(texture_bgr, cv2.COLOR_BGR2RGB)
+
+    # Downsample geometry resolution for a renderable mesh, but keep the
+    # GeoTIFF at full elevation resolution — the raster format has no vertex
+    # count to worry about, so there's no reason to throw away real data there.
+    mesh_elevation = downsample_elevation_for_mesh(elevation, max_grid_size=MAX_MESH_GRID_SIZE)
+    geometry = build_heightfield_geometry(
+        mesh_elevation, pixel_size_x=pixel_size_x, pixel_size_z=pixel_size_z, z_exaggeration=z_exaggeration
+    )
+
+    zip_bytes = build_mesh_zip(
+        geometry,
+        texture_rgb,
+        elevation_for_geotiff=elevation,  # full resolution, not the downsampled mesh version
+        geo_transform=geo_transform,
+        geo_crs=geo_crs,
+        include_obj=include_obj,
+    )
+
+    elapsed_ms = int((time.monotonic() - start) * 1000)
+    return MeshResult(
+        zip_bytes=zip_bytes,
+        vertex_count=len(geometry.vertices),
+        face_count=len(geometry.faces),
+        processing_ms=elapsed_ms,
+    )

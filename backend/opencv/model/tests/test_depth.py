@@ -16,8 +16,11 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from backend.opencv.model.depth_infer import DummyDepthModel, run_depth_pipeline, to_relative_elevation
+_OPENCV_ROOT = str(Path(__file__).resolve().parent.parent.parent)
+if _OPENCV_ROOT not in sys.path:
+    sys.path.insert(0, _OPENCV_ROOT)
+
+from model.depth_infer import DummyDepthModel, run_depth_pipeline, to_relative_elevation
 
 
 def make_synthetic_image(h: int, w: int) -> np.ndarray:
