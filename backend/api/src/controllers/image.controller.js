@@ -156,3 +156,83 @@ export const getAnnotations = asyncHandler(async (req, res) => {
         .status(200)
         .json(new ApiResponse(200, image.annotations, "Annotations fetched successfully"));
 });
+
+
+// Process image and initiate terrain pipeline
+// POST /api/images/:imageId/process
+export const processImage = asyncHandler(async (req, res) => {
+    const { imageId } = req.params;
+    const { backbone, calibMethod } = req.body;
+
+    const image = await Image.findById(imageId);
+    if (!image) {
+        throw new ApiError(404, "Image not found");
+    }
+
+    // Generate a unique UI hash like #QM-8841
+    const randomSuffix = Math.floor(1000 + Math.random() * 9000);
+    const jobHash = `#QM-${randomSuffix}`;
+
+    // Create the job matching your schema
+    const job = await Job.create({
+        image: image._id,
+        jobHash,
+        backbone: backbone || "vit-l",
+        calibMethod: calibMethod || (image.gcps?.length ? "gcp" : "srtm"),
+        status: "queued",
+        stage: "preprocess",
+        progress: 0,
+        statusMessage: "Task enqueued for processing"
+    });
+
+    // Mock pipeline stages in the background (runs asynchronously)
+    setTimeout(async () => {
+        try {
+            // Stage 1: Active / Depth inference
+            await Job.findByIdAndUpdate(job._id, {
+                status: "active",
+                stage: "depth_inference",
+                progress: 35,
+                statusMessage: "Running Vision Transformer depth inference"
+            });
+
+            // Stage 2: Calibration & Mesh generation
+            setTimeout(async () => {
+                await Job.findByIdAndUpdate(job._id, {
+                    stage: "mesh_generation",
+                    progress: 75,
+                    statusMessage: "Constructing 3D surface mesh and elevation matrix"
+                });
+
+                // Stage 3: Completed
+                setTimeout(async () => {
+                    await Job.findByIdAndUpdate(job._id, {
+                        status: "completed",
+                        stage: "finalizing",
+                        progress: 100,
+                        statusMessage: "Terrain pipeline completed successfully"
+                    });
+                }, 3000);
+            }, 3000);
+        } catch (err) {
+            await Job.findByIdAndUpdate(job._id, {
+                status: "failed",
+                errorMessage: err.message
+            });
+        }
+    }, 1000);
+
+    return res.status(202).json(
+        new ApiResponse(
+            202,
+            {
+                jobId: job._id,
+                jobHash: job.jobHash,
+                status: job.status,
+                stage: job.stage,
+                progress: job.progress
+            },
+            "Terrain processing initiated"
+        )
+    );
+});

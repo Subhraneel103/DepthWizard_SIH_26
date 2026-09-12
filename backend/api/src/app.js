@@ -7,6 +7,7 @@ import { clerkMiddleware } from "@clerk/express";
 // Route imports (matches your project.route.js filename)
 import projectRouter from "./routes/project.route.js";
 import imageRouter from "./routes/image.route.js"; 
+import jobRouter from "./routes/job.route.js"; 
 
 // Middleware imports
 import { errorHandler } from "./middlewares/error.middleware.js";
@@ -37,7 +38,9 @@ app.use(clerkMiddleware());
 
 // 5. API Routes
 app.use("/api/projects", projectRouter);
-app.use("/api/images", imageRouter); // Assuming you want to handle image routes under the same router
+app.use("/api/images", imageRouter);
+app.use("/api/jobs", jobRouter); 
+
 
 // 6. 404 Route Handler
 app.use((req, res, next) => {

@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { requireAuth } from "../middlewares/auth.middleware.js";
-import { getImageMetadata, deleteGCP, addGCP, getGCPs, addAnnotation, getAnnotations} from "../controllers/image.controller.js";
+import { getImageMetadata, deleteGCP, addGCP, getGCPs, addAnnotation, getAnnotations, processImage } from "../controllers/image.controller.js";
 
 const router = Router();
 
@@ -8,6 +8,9 @@ const router = Router();
 router.use(requireAuth);
 
 router.route("/:imageId/metadata").get(getImageMetadata);
+
+// Process image and initiate terrain pipeline
+router.route("/:imageId/process").post(processImage);
 
 // GCP routes
 router.route("/:imageId/gcps")
