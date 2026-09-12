@@ -1,20 +1,14 @@
 import asyncHandler from "../utils/asyncHandler.js";
 import ApiError from "../utils/ApiError.js";
 import ApiResponse from "../utils/ApiResponse.js";
-import Image from "../models/Images.model.js";
-import Job from "../models/Jobs.model.js";
+import Image from "../models/Images.model.js"; // Ensure exact case matches disk
+import Job from "../models/Jobs.model.js";     // Ensure exact case matches disk
 
-
-// Get metadata for a specific image
-// GET /api/images/:imageId
+// GET /api/images/:imageId/metadata
 export const getImageMetadata = asyncHandler(async (req, res) => {
     const { imageId } = req.params;
-
     const image = await Image.findById(imageId);
-
-    if (!image) {
-        throw new ApiError(404, "Image not found");
-    }
+    if (!image) throw new ApiError(404, "Image not found");
 
     const metadata = {
         imageId: image._id,
@@ -28,19 +22,14 @@ export const getImageMetadata = asyncHandler(async (req, res) => {
         gcpsCount: image.gcps ? image.gcps.length : 0
     };
 
-    return res
-        .status(200)
-        .json(new ApiResponse(200, metadata, "Image metadata fetched successfully"));
+    return res.status(200).json(new ApiResponse(200, metadata, "Image metadata fetched successfully"));
 });
 
-
-// GCP (Ground Control Point) management routes
 // POST /api/images/:imageId/gcps
 export const addGCP = asyncHandler(async (req, res) => {
     const { imageId } = req.params;
-    const { pixelX, pixelY, lat, lon, worldX, worldY, elevation, label, source } = req.body;
+    const { pixelX, pixelY, lat, lon, worldX, worldY, elevation, label, source } = req.body || {};
 
-    // Support both lat/lon and worldY/worldX
     const resolvedLat = lat ?? worldY;
     const resolvedLon = lon ?? worldX;
 
@@ -49,9 +38,7 @@ export const addGCP = asyncHandler(async (req, res) => {
     }
 
     const image = await Image.findById(imageId);
-    if (!image) {
-        throw new ApiError(404, "Image not found");
-    }
+    if (!image) throw new ApiError(404, "Image not found");
 
     image.gcps.push({
         pixelX,
@@ -64,67 +51,44 @@ export const addGCP = asyncHandler(async (req, res) => {
     });
 
     await image.save();
-
-    return res
-        .status(201)
-        .json(new ApiResponse(201, image.gcps, "GCP added successfully"));
+    return res.status(201).json(new ApiResponse(201, image.gcps, "GCP added successfully"));
 });
 
-
-// GET /api/images/:imageId/gcps
 // GET /api/images/:imageId/gcps
 export const getGCPs = asyncHandler(async (req, res) => {
     const { imageId } = req.params;
-
     const image = await Image.findById(imageId).select("gcps");
-    if (!image) {
-        throw new ApiError(404, "Image not found");
-    }
+    if (!image) throw new ApiError(404, "Image not found");
 
-    return res
-        .status(200)
-        .json(new ApiResponse(200, image.gcps, "GCPs fetched successfully"));
+    return res.status(200).json(new ApiResponse(200, image.gcps, "GCPs fetched successfully"));
 });
 
-// deleteGCP function to delete a specific GCP from an image
 // DELETE /api/images/:imageId/gcps/:gcpId
 export const deleteGCP = asyncHandler(async (req, res) => {
     const { imageId, gcpId } = req.params;
-
     const image = await Image.findById(imageId);
-    if (!image) {
-        throw new ApiError(404, "Image not found");
-    }
+    if (!image) throw new ApiError(404, "Image not found");
 
-    // Check if the GCP exists in the array
     const gcp = image.gcps.id(gcpId);
-    if (!gcp) {
-        throw new ApiError(404, "GCP point not found");
-    }
+    if (!gcp) throw new ApiError(404, "GCP point not found");
 
-    // Pull the subdocument from the array
     image.gcps.pull(gcpId);
     await image.save();
 
-    return res
-        .status(200)
-        .json(new ApiResponse(200, image.gcps, "GCP deleted successfully"));
+    return res.status(200).json(new ApiResponse(200, image.gcps, "GCP deleted successfully"));
 });
 
-// Annotation management routes
 // POST /api/images/:imageId/annotations
 export const addAnnotation = asyncHandler(async (req, res) => {
     const { imageId } = req.params;
-    const { label, type, coordinates, color, notes } = req.body;
+    const { label, type, coordinates, color, notes } = req.body || {};
 
     if (!label || !coordinates) {
         throw new ApiError(400, "Label and coordinates are required");
     }
 
     const image = await Image.findById(imageId);
-    if (!image) {
-        throw new ApiError(404, "Image not found");
-    }
+    if (!image) throw new ApiError(404, "Image not found");
 
     const newAnnotation = {
         label,
@@ -138,42 +102,29 @@ export const addAnnotation = asyncHandler(async (req, res) => {
     image.annotations.push(newAnnotation);
     await image.save();
 
-    return res
-        .status(201)
-        .json(new ApiResponse(201, image.annotations, "Annotation added successfully"));
+    return res.status(201).json(new ApiResponse(201, image.annotations, "Annotation added successfully"));
 });
 
 // GET /api/images/:imageId/annotations
 export const getAnnotations = asyncHandler(async (req, res) => {
     const { imageId } = req.params;
-
     const image = await Image.findById(imageId).select("annotations");
-    if (!image) {
-        throw new ApiError(404, "Image not found");
-    }
+    if (!image) throw new ApiError(404, "Image not found");
 
-    return res
-        .status(200)
-        .json(new ApiResponse(200, image.annotations, "Annotations fetched successfully"));
+    return res.status(200).json(new ApiResponse(200, image.annotations, "Annotations fetched successfully"));
 });
 
-
-// Process image and initiate terrain pipeline
 // POST /api/images/:imageId/process
 export const processImage = asyncHandler(async (req, res) => {
     const { imageId } = req.params;
-    const { backbone, calibMethod } = req.body;
+    const { backbone, calibMethod } = req.body || {};
 
     const image = await Image.findById(imageId);
-    if (!image) {
-        throw new ApiError(404, "Image not found");
-    }
+    if (!image) throw new ApiError(404, "Image not found");
 
-    // Generate a unique UI hash like #QM-8841
     const randomSuffix = Math.floor(1000 + Math.random() * 9000);
     const jobHash = `#QM-${randomSuffix}`;
 
-    // Create the job matching your schema
     const job = await Job.create({
         image: image._id,
         jobHash,
@@ -185,10 +136,8 @@ export const processImage = asyncHandler(async (req, res) => {
         statusMessage: "Task enqueued for processing"
     });
 
-    // Mock pipeline stages in the background (runs asynchronously)
     setTimeout(async () => {
         try {
-            // Stage 1: Active / Depth inference
             await Job.findByIdAndUpdate(job._id, {
                 status: "active",
                 stage: "depth_inference",
@@ -196,7 +145,6 @@ export const processImage = asyncHandler(async (req, res) => {
                 statusMessage: "Running Vision Transformer depth inference"
             });
 
-            // Stage 2: Calibration & Mesh generation
             setTimeout(async () => {
                 await Job.findByIdAndUpdate(job._id, {
                     stage: "mesh_generation",
@@ -204,7 +152,6 @@ export const processImage = asyncHandler(async (req, res) => {
                     statusMessage: "Constructing 3D surface mesh and elevation matrix"
                 });
 
-                // Stage 3: Completed
                 setTimeout(async () => {
                     await Job.findByIdAndUpdate(job._id, {
                         status: "completed",
@@ -249,7 +196,16 @@ export const getImageMesh = asyncHandler(async (req, res) => {
         bounds: image.bounds,
         stats: { vertexCount: 1681, faceCount: 3200, minElevation: 2.1, maxElevation: 48.7 },
         meshUrl: `/uploads/mesh-${image._id}.obj`,
-        sampleGrid: { rows: 4, cols: 4, heights: [[12.4, 13.1, 14.0, 15.2], [11.8, 12.5, 13.9, 14.8], [10.2, 11.0, 12.4, 13.5], [9.5, 10.1, 11.2, 12.0]] }
+        sampleGrid: {
+            rows: 4,
+            cols: 4,
+            heights: [
+                [12.4, 13.1, 14.0, 15.2],
+                [11.8, 12.5, 13.9, 14.8],
+                [10.2, 11.0, 12.4, 13.5],
+                [9.5,  10.1, 11.2, 12.0]
+            ]
+        }
     };
     return res.status(200).json(new ApiResponse(200, meshPayload, "Mesh data retrieved successfully"));
 });
@@ -275,13 +231,15 @@ export const getImageDSM = asyncHandler(async (req, res) => {
 // POST /api/images/:imageId/measure
 export const measureTerrain = asyncHandler(async (req, res) => {
     const { imageId } = req.params;
-    const { startPoint, endPoint } = req.body; // e.g. { x: 100, y: 150, z: 12.5 }
-    
+    const image = await Image.findById(imageId);
+    if (!image) throw new ApiError(404, "Image not found");
+
+    const { startPoint, endPoint } = req.body || {};
     if (!startPoint || !endPoint) throw new ApiError(400, "startPoint and endPoint are required");
 
-    const dx = (endPoint.x - startPoint.x) * 0.5; // Scaled by 0.5m GSD
-    const dy = (endPoint.y - startPoint.y) * 0.5;
-    const dz = (endPoint.z || 0) - (startPoint.z || 0);
+    const dx = ((endPoint.x ?? 0) - (startPoint.x ?? 0)) * 0.5;
+    const dy = ((endPoint.y ?? 0) - (startPoint.y ?? 0)) * 0.5;
+    const dz = (endPoint.z ?? 0) - (startPoint.z ?? 0);
 
     const horizontalDistance = Math.hypot(dx, dy);
     const slopeDistance = Math.hypot(horizontalDistance, dz);
@@ -298,8 +256,10 @@ export const measureTerrain = asyncHandler(async (req, res) => {
 // POST /api/images/:imageId/flood-sim
 export const simulateFlood = asyncHandler(async (req, res) => {
     const { imageId } = req.params;
-    const { waterLevel } = req.body; 
+    const image = await Image.findById(imageId);
+    if (!image) throw new ApiError(404, "Image not found");
 
+    const { waterLevel } = req.body || {};
     if (waterLevel === undefined) throw new ApiError(400, "waterLevel parameter is required");
 
     const totalAreaM2 = 10000;
@@ -320,7 +280,8 @@ export const simulateFlood = asyncHandler(async (req, res) => {
 // GET /api/images/:imageId/export
 export const exportAsset = asyncHandler(async (req, res) => {
     const { imageId } = req.params;
-    const { format = "geojson" } = req.query;
+    const { format = "geojson" } = req.query || {};
+
     const image = await Image.findById(imageId);
     if (!image) throw new ApiError(404, "Image not found");
 
@@ -334,13 +295,19 @@ export const exportAsset = asyncHandler(async (req, res) => {
 // POST /api/images/:imageId/export/package
 export const createExportPackage = asyncHandler(async (req, res) => {
     const { imageId } = req.params;
-    const { includeRawImage, includeDsm, includeMesh, includeGcps } = req.body;
+    const { includeRawImage, includeDsm, includeMesh, includeGcps } = req.body || {};
+
     const image = await Image.findById(imageId);
     if (!image) throw new ApiError(404, "Image not found");
 
     return res.status(200).json(new ApiResponse(200, {
         packageUrl: `/downloads/package-${image._id}.zip`,
-        contents: { rawImage: !!includeRawImage, dsm: !!includeDsm, mesh: !!includeMesh, gcps: !!includeGcps },
+        contents: {
+            rawImage: !!includeRawImage,
+            dsm: !!includeDsm,
+            mesh: !!includeMesh,
+            gcps: !!includeGcps
+        },
         status: "ready"
     }, "Export archive package prepared"));
 });
@@ -348,7 +315,10 @@ export const createExportPackage = asyncHandler(async (req, res) => {
 // POST /api/images/:imageId/share
 export const shareProjectView = asyncHandler(async (req, res) => {
     const { imageId } = req.params;
-    const { permission = "view", expiresInDays = 7 } = req.body;
+    const image = await Image.findById(imageId);
+    if (!image) throw new ApiError(404, "Image not found");
+
+    const { permission = "view", expiresInDays = 7 } = req.body || {};
     const shareToken = Math.random().toString(36).substring(2, 12);
 
     return res.status(200).json(new ApiResponse(200, {
