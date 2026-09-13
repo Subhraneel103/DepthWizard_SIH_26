@@ -5,6 +5,7 @@ import HeroBackground from './components/HeroBackground'
 import LandingPage from './pages/LandingPage'
 import ProjectsHubPage from './pages/ProjectsHubPage'
 import ProjectDetailPage from './pages/ProjectDetailPage'
+import WorkspacePage from './pages/WorkspacePage'
 import './App.css'
 
 // ── Route guard: redirects unauthenticated users to / ─
@@ -41,6 +42,16 @@ export default function App() {
           element={
             <ProtectedRoute>
               <ProjectDetailPage />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* Authenticated: image workspace */}
+        <Route
+          path="/projects/:projectId/workspace/:imageId"
+          element={
+            <ProtectedRoute>
+              <WorkspacePage />
             </ProtectedRoute>
           }
         />

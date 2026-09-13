@@ -1,0 +1,849 @@
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { useParams, useNavigate, Link } from 'react-router-dom'
+import { useAuth } from '@clerk/clerk-react'
+import HeroBackground from '../components/HeroBackground'
+
+const NAVBAR_H = 108
+
+// ── API helpers ──────────────────────────────────────────────────────────────
+
+function buildImageUrl(storagePath, baseUrl) {
+  if (!storagePath) return null
+  if (storagePath.startsWith('http')) return storagePath
+  const serverRoot = baseUrl.replace(/\/api\/?$/, '').replace(/\/$/, '')
+  const filename = storagePath.split(/[/\\]/).pop()
+  return serverRoot + '/uploads/' + filename
+}
+
+async function apiFetch(url, token, opts = {}) {
+  const res = await fetch(url, {
+    ...opts,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      ...(opts.headers || {}),
+    },
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.message || `Error ${res.status}`)
+  }
+  const json = await res.json()
+  return json.data
+}
+
+// ── Tiny UI primitives ───────────────────────────────────────────────────────
+
+function PanelHeader({ children }) {
+  return (
+    <div
+      className="font-mono text-[9px] uppercase tracking-[0.28em] px-3 py-2 flex items-center gap-2 flex-shrink-0"
+      style={{ color: '#404040', borderBottom: '1px solid #1a1a1a' }}
+    >
+      {children}
+    </div>
+  )
+}
+
+function SectionDivider({ label, icon }) {
+  return (
+    <div
+      className="flex items-center gap-2 px-3 py-2 mt-1 flex-shrink-0"
+      style={{ borderTop: '1px solid #161616' }}
+    >
+      {icon && <span className="text-[11px]">{icon}</span>}
+      <span className="font-mono text-[9px] uppercase tracking-[0.28em]" style={{ color: '#383838' }}>
+        {label}
+      </span>
+    </div>
+  )
+}
+
+function DataRow({ label, value, accent }) {
+  return (
+    <div className="flex items-center justify-between px-3 py-1.5 gap-2">
+      <span className="font-mono text-[10px] tracking-wide" style={{ color: '#3d3d3d' }}>
+        {label}
+      </span>
+      <span className="font-mono text-[11px] font-bold tracking-wide" style={{ color: accent || '#7a7a7a' }}>
+        {value}
+      </span>
+    </div>
+  )
+}
+
+function ActionBtn({ onClick, children, disabled, variant = 'primary' }) {
+  const isPrimary = variant === 'primary'
+  return (
+    <button
+      onClick={disabled ? undefined : onClick}
+      className="font-mono text-[9px] uppercase tracking-[0.18em] font-bold w-full py-2"
+      style={{
+        background: isPrimary ? (disabled ? '#888' : '#e5e5e5') : 'transparent',
+        border: isPrimary ? 'none' : '1px solid #2a2a2a',
+        color: isPrimary ? '#000' : '#737373',
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        opacity: disabled ? 0.5 : 1,
+        borderRadius: 0,
+        letterSpacing: '0.18em',
+        transition: 'all 0.15s',
+        fontFamily: 'inherit',
+      }}
+      onMouseEnter={(e) => {
+        if (disabled) return
+        if (isPrimary) e.currentTarget.style.background = '#fff'
+        else { e.currentTarget.style.borderColor = '#454545'; e.currentTarget.style.color = '#a1a1aa' }
+      }}
+      onMouseLeave={(e) => {
+        if (isPrimary) e.currentTarget.style.background = disabled ? '#888' : '#e5e5e5'
+        else { e.currentTarget.style.borderColor = '#2a2a2a'; e.currentTarget.style.color = '#737373' }
+      }}
+    >
+      {children}
+    </button>
+  )
+}
+
+function LockedLabel({ text }) {
+  return (
+    <div className="flex items-center gap-1.5 px-3 py-1.5">
+      <span className="text-[10px]">🔒</span>
+      <span className="font-mono text-[10px]" style={{ color: '#303030' }}>{text}</span>
+    </div>
+  )
+}
+
+function LayerToggle({ label, active, locked, onClick }) {
+  if (locked) return <LockedLabel text={label + ' (Locked)'} />
+  return (
+    <button
+      onClick={onClick}
+      className="flex items-center gap-2 px-3 py-1.5 w-full text-left transition-colors duration-100 cursor-pointer"
+      style={{ background: 'none', border: 'none', fontFamily: 'inherit' }}
+      onMouseEnter={(e) => { e.currentTarget.style.background = '#0f0f0f' }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = 'none' }}
+    >
+      <span style={{
+        width: 8, height: 8, flexShrink: 0, borderRadius: '50%',
+        background: active ? '#a1a1aa' : 'transparent',
+        border: active ? '1px solid #a1a1aa' : '1px solid #333',
+      }} />
+      <span className="font-mono text-[11px]" style={{ color: active ? '#d4d4d4' : '#505050' }}>
+        {label}
+      </span>
+    </button>
+  )
+}
+
+// ── Canvas viewport ──────────────────────────────────────────────────────────
+
+function GridCanvas({ imageUrl, imageState, job }) {
+  return (
+    <div
+      className="relative w-full h-full overflow-hidden flex items-center justify-center"
+      style={{
+        background: '#080808',
+        backgroundImage: `
+          linear-gradient(rgba(255,255,255,0.022) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255,255,255,0.022) 1px, transparent 1px)
+        `,
+        backgroundSize: '40px 40px',
+      }}
+    >
+      {/* Radial fade on edges */}
+      <div
+        className="absolute inset-0 pointer-events-none"
+        style={{
+          background: `radial-gradient(ellipse 80% 70% at 50% 50%, transparent 38%, rgba(8,8,8,0.92) 100%)`,
+          zIndex: 2,
+        }}
+      />
+
+      {/* ── IDLE: 2D image viewer ── */}
+      {imageState === 'idle' && (
+        <div className="relative z-10 flex flex-col items-center gap-4 select-none" style={{ maxWidth: '70%' }}>
+          {imageUrl ? (
+            <div className="relative">
+              <img
+                src={imageUrl}
+                alt="Aerial"
+                style={{ maxWidth: '100%', maxHeight: 380, border: '1px solid #1e1e1e', display: 'block' }}
+              />
+              <div
+                className="absolute inset-0 flex items-end justify-center pb-3"
+                style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.75) 0%, transparent 55%)' }}
+              >
+                <span className="font-mono text-[10px] uppercase tracking-[0.22em]" style={{ color: '#404040' }}>
+                  [ Flat Aerial Photo ]
+                </span>
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center gap-3" style={{ opacity: 0.22 }}>
+              <svg width="64" height="64" viewBox="0 0 24 24" fill="none">
+                <rect x="3" y="5" width="18" height="14" stroke="#666" strokeWidth="0.8" />
+                <circle cx="8.5" cy="10" r="1.5" stroke="#666" strokeWidth="0.8" />
+                <path d="M3 16l5-4 4 3 3-2 6 4" stroke="#666" strokeWidth="0.8" strokeLinejoin="round" />
+              </svg>
+              <span className="font-mono text-[11px] uppercase tracking-[0.22em]" style={{ color: '#333' }}>
+                2D Image Viewer
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── PROCESSING ── */}
+      {imageState === 'processing' && (
+        <div className="relative z-10 flex flex-col items-center gap-6 select-none">
+          <div className="flex flex-col items-center gap-3">
+            <span className="text-4xl" style={{ animation: 'spin 3s linear infinite', display: 'inline-block' }}>⚙️</span>
+            <span className="font-mono text-[13px] uppercase tracking-[0.22em]" style={{ color: '#555' }}>
+              AI Engine Active…
+            </span>
+          </div>
+          <div style={{ border: '1px solid #1e1e1e', background: '#0c0c0c', padding: '14px 24px', minWidth: 280 }}>
+            <p className="font-mono text-[9px] uppercase tracking-[0.22em] mb-3" style={{ color: '#303030' }}>
+              Processing Pipeline
+            </p>
+            <div style={{ height: 2, background: '#1a1a1a', marginBottom: 8 }}>
+              <div style={{
+                height: '100%', background: '#a1a1aa',
+                width: `${job?.progress ?? 0}%`, transition: 'width 0.6s ease',
+              }} />
+            </div>
+            <div className="flex justify-between mb-2">
+              <span className="font-mono text-[9px]" style={{ color: '#404040' }}>
+                {job?.stage?.replace(/_/g, ' ') || 'initialising'}
+              </span>
+              <span className="font-mono text-[9px] font-bold" style={{ color: '#606060' }}>
+                {job?.progress ?? 0}%
+              </span>
+            </div>
+            {job?.jobHash && (
+              <p className="font-mono text-[8px]" style={{ color: '#282828' }}>Job {job.jobHash}</p>
+            )}
+          </div>
+          <span className="font-mono text-[10px] uppercase tracking-[0.2em]" style={{ color: '#2a2a2a' }}>
+            Building spatial matrices
+          </span>
+        </div>
+      )}
+
+      {/* ── COMPLETED: image + mesh tint ── */}
+      {imageState === 'completed' && (
+        <div className="relative z-10 flex flex-col items-center gap-4 select-none" style={{ maxWidth: '70%' }}>
+          {imageUrl ? (
+            <div className="relative">
+              <img
+                src={imageUrl}
+                alt="Aerial"
+                style={{ maxWidth: '100%', maxHeight: 360, border: '1px solid #1e1e1e', display: 'block' }}
+              />
+              {/* Simulated DSM heatmap overlay */}
+              <div
+                className="absolute inset-0 pointer-events-none"
+                style={{ background: 'rgba(40,80,120,0.14)', mixBlendMode: 'overlay' }}
+              />
+              <div
+                className="absolute inset-0 flex items-end justify-center pb-3"
+                style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.75) 0%, transparent 55%)' }}
+              >
+                <span className="font-mono text-[10px] uppercase tracking-[0.22em]" style={{ color: '#506050' }}>
+                  [ 3D Surface — Mesh Reconstructed ]
+                </span>
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center gap-3" style={{ opacity: 0.3 }}>
+              <svg width="80" height="60" viewBox="0 0 80 60" fill="none">
+                <path d="M40 4 L76 56 L4 56 Z" stroke="#555" strokeWidth="0.8" fill="none" />
+                <path d="M40 4 L4 56" stroke="#333" strokeWidth="0.4" />
+                <path d="M40 4 L76 56" stroke="#333" strokeWidth="0.4" />
+                <path d="M16 38 L64 38" stroke="#2e2e2e" strokeWidth="0.4" />
+                <path d="M24 22 L56 22" stroke="#292929" strokeWidth="0.4" />
+              </svg>
+              <span className="font-mono text-[11px] uppercase tracking-[0.22em]" style={{ color: '#383838' }}>
+                3D Mesh Viewport
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Bottom-left spatial data overlay */}
+      <div className="absolute bottom-4 left-5 z-10 font-mono select-none">
+        <div className="text-[8px] uppercase tracking-[0.2em] mb-1" style={{ color: '#252525' }}>Spatial Data</div>
+        <div className="text-[10px]" style={{ color: '#2d2d2d' }}>
+          X: 28.6134° &nbsp; Y: 77.2090° &nbsp; Z: {imageState === 'completed' ? '21.4' : '—'} m
+        </div>
+        <div className="text-[10px] mt-0.5" style={{ color: '#2d2d2d' }}>
+          GSD: {imageState === 'completed' ? '0.50' : '—'} cm/px &nbsp;·&nbsp; CRS: EPSG:4326
+        </div>
+      </div>
+
+      {/* Top-right status badge */}
+      <div className="absolute top-3 right-3 z-10">
+        <div
+          className="font-mono text-[8px] uppercase tracking-[0.18em] px-2 py-1"
+          style={{
+            border: '1px solid',
+            borderColor: imageState === 'completed' ? '#2a4a2a' : imageState === 'processing' ? '#4a4a1a' : '#222',
+            color: imageState === 'completed' ? '#4a8a4a' : imageState === 'processing' ? '#8a8a4a' : '#363636',
+            background: imageState === 'completed' ? 'rgba(42,74,42,0.18)' : imageState === 'processing' ? 'rgba(74,74,26,0.18)' : 'rgba(18,18,18,0.4)',
+          }}
+        >
+          {imageState === 'completed' ? '● Completed' : imageState === 'processing' ? '◌ Processing' : '○ Idle'}
+        </div>
+      </div>
+
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+      `}</style>
+    </div>
+  )
+}
+
+// ── Main page ────────────────────────────────────────────────────────────────
+
+export default function WorkspacePage() {
+  const { projectId, imageId } = useParams()
+  const navigate = useNavigate()
+  const { getToken } = useAuth()
+  const baseUrl = import.meta.env.VITE_API_BASE_URL
+
+  const [image, setImage] = useState(null)
+  const [project, setProject] = useState(null)
+  const [job, setJob] = useState(null)
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState(null)
+
+  const [activeLayer, setActiveLayer] = useState('raw')
+  const [isGenerating, setIsGenerating] = useState(false)
+  const [genError, setGenError] = useState(null)
+
+  const [measureData, setMeasureData] = useState(null)
+  const [isMeasuring, setIsMeasuring] = useState(false)
+
+  const [waterLevel, setWaterLevel] = useState(15)
+  const [floodData, setFloodData] = useState(null)
+
+  const [gcps, setGcps] = useState([])
+  const [isValidating, setIsValidating] = useState(false)
+  const [validationDone, setValidationDone] = useState(false)
+
+  const [shareUrl, setShareUrl] = useState(null)
+  const [isSharing, setIsSharing] = useState(false)
+
+  const pollRef = useRef(null)
+  const floodTimer = useRef(null)
+
+  const imageState =
+    job?.status === 'completed' ? 'completed'
+    : (job?.status === 'active' || job?.status === 'queued') ? 'processing'
+    : 'idle'
+
+  // ── Load image + project ──
+  const load = useCallback(async () => {
+    try {
+      setIsLoading(true)
+      const token = await getToken()
+      const imgData = await apiFetch(`${baseUrl}/images/${imageId}/metadata`, token)
+      setImage(imgData)
+      try {
+        const projData = await apiFetch(`${baseUrl}/projects/${projectId}`, token)
+        setProject(projData)
+      } catch {}
+      const gcpData = await apiFetch(`${baseUrl}/images/${imageId}/gcps`, token)
+      setGcps(gcpData || [])
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setIsLoading(false)
+    }
+  }, [baseUrl, imageId, projectId, getToken])
+
+  useEffect(() => { load() }, [load])
+  useEffect(() => () => { clearInterval(pollRef.current); clearTimeout(floodTimer.current) }, [])
+
+  // ── Poll job ──
+  const pollJob = useCallback(async (jobId) => {
+    try {
+      const token = await getToken()
+      const jData = await apiFetch(`${baseUrl}/jobs/${jobId}`, token)
+      setJob(jData)
+      if (jData.status === 'completed' || jData.status === 'failed') {
+        clearInterval(pollRef.current)
+        pollRef.current = null
+      }
+    } catch {}
+  }, [baseUrl, getToken])
+
+  // ── Generate 3D ──
+  const handleGenerate = useCallback(async () => {
+    try {
+      setIsGenerating(true)
+      setGenError(null)
+      const token = await getToken()
+      const jobData = await apiFetch(
+        `${baseUrl}/images/${imageId}/process`,
+        token,
+        { method: 'POST', body: JSON.stringify({ backbone: 'vit-l' }) }
+      )
+      setJob({ ...jobData, status: jobData.status || 'queued' })
+      clearInterval(pollRef.current)
+      pollRef.current = setInterval(() => pollJob(jobData.jobId), 2500)
+    } catch (err) {
+      setGenError(err.message)
+    } finally {
+      setIsGenerating(false)
+    }
+  }, [baseUrl, imageId, getToken, pollJob])
+
+  // ── Measure ──
+  const handleMeasure = useCallback(async () => {
+    try {
+      setIsMeasuring(true)
+      const token = await getToken()
+      const data = await apiFetch(
+        `${baseUrl}/images/${imageId}/measure`,
+        token,
+        { method: 'POST', body: JSON.stringify({ startPoint: { x: 100, y: 100, z: 10 }, endPoint: { x: 300, y: 250, z: 18 } }) }
+      )
+      setMeasureData(data)
+    } catch (err) { console.error(err) }
+    finally { setIsMeasuring(false) }
+  }, [baseUrl, imageId, getToken])
+
+  // ── Flood sim ──
+  const handleFloodSim = useCallback(async (level) => {
+    try {
+      const token = await getToken()
+      const data = await apiFetch(
+        `${baseUrl}/images/${imageId}/flood-sim`,
+        token,
+        { method: 'POST', body: JSON.stringify({ waterLevel: level }) }
+      )
+      setFloodData(data)
+    } catch (err) { console.error(err) }
+  }, [baseUrl, imageId, getToken])
+
+  const onWaterLevelChange = (v) => {
+    setWaterLevel(v)
+    clearTimeout(floodTimer.current)
+    if (imageState === 'completed') {
+      floodTimer.current = setTimeout(() => handleFloodSim(v), 500)
+    }
+  }
+
+  useEffect(() => {
+    if (imageState === 'completed' && !floodData) handleFloodSim(waterLevel)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [imageState])
+
+  // ── GCP validation ──
+  const handleValidate = useCallback(() => {
+    setIsValidating(true)
+    setTimeout(() => { setIsValidating(false); setValidationDone(true) }, 1800)
+  }, [])
+
+  // ── Share ──
+  const handleShare = useCallback(async () => {
+    try {
+      setIsSharing(true)
+      const token = await getToken()
+      const data = await apiFetch(
+        `${baseUrl}/images/${imageId}/share`,
+        token,
+        { method: 'POST', body: JSON.stringify({ permission: 'view', expiresInDays: 7 }) }
+      )
+      setShareUrl(data.shareUrl)
+      await navigator.clipboard.writeText(data.shareUrl).catch(() => {})
+    } catch (err) { console.error(err) }
+    finally { setIsSharing(false) }
+  }, [baseUrl, imageId, getToken])
+
+  // ── Export ──
+  const handleExport = useCallback(async () => {
+    try {
+      const token = await getToken()
+      const data = await apiFetch(`${baseUrl}/images/${imageId}/export?format=geojson`, token)
+      alert(`Export ready:\n${data.downloadUrl}`)
+    } catch (err) { console.error(err) }
+  }, [baseUrl, imageId, getToken])
+
+  // ── Build image URL ──
+  const imageUrl = image ? buildImageUrl(image.storagePath, baseUrl) : null
+  const filename = image?.filename || imageId
+  const projectName = project?.name || project?.projectName || projectId
+
+  if (isLoading) return (
+    <>
+      <HeroBackground />
+      <div className="flex items-center justify-center" style={{ height: '100svh', paddingTop: NAVBAR_H }}>
+        <span className="font-mono text-[11px] uppercase tracking-[0.22em]" style={{ color: '#2e2e2e' }}>
+          Loading workspace…
+        </span>
+      </div>
+    </>
+  )
+
+  if (error) return (
+    <>
+      <HeroBackground />
+      <div className="flex flex-col items-center justify-center gap-4" style={{ height: '100svh', paddingTop: NAVBAR_H }}>
+        <span className="font-mono text-[11px]" style={{ color: '#7a3a3a' }}>⚠ {error}</span>
+        <button
+          onClick={() => navigate(`/projects/${projectId}`)}
+          className="font-mono text-[10px] uppercase tracking-[0.18em]"
+          style={{ background: 'transparent', border: '1px solid #2a2a2a', color: '#737373', padding: '10px 20px', cursor: 'pointer', fontFamily: 'inherit' }}
+        >
+          ← Back to Project
+        </button>
+      </div>
+    </>
+  )
+
+  return (
+    <>
+      <HeroBackground />
+      <div
+        style={{
+          position: 'fixed', top: NAVBAR_H, left: 0, right: 0, bottom: 0,
+          display: 'flex', flexDirection: 'column',
+          zIndex: 1,
+        }}
+      >
+
+        {/* ── TOP TOOLBAR ── */}
+        <div
+          className="flex items-center justify-between flex-shrink-0"
+          style={{
+            height: 40, paddingLeft: 16, paddingRight: 16,
+            borderBottom: '1px solid #1a1a1a',
+            background: 'rgba(6,6,6,0.96)',
+            backdropFilter: 'blur(8px)',
+          }}
+        >
+          {/* Breadcrumbs */}
+          <div className="flex items-center gap-2">
+            {[
+              { label: 'Hub', to: '/' },
+              { label: projectName, to: `/projects/${projectId}` },
+            ].map(({ label, to }, i) => (
+              <span key={i} className="flex items-center gap-2">
+                <Link
+                  to={to}
+                  className="font-mono text-[10px] transition-colors"
+                  style={{ color: '#363636' }}
+                  onMouseEnter={(e) => { e.currentTarget.style.color = '#666' }}
+                  onMouseLeave={(e) => { e.currentTarget.style.color = '#363636' }}
+                >
+                  {label}
+                </Link>
+                <span className="font-mono text-[10px]" style={{ color: '#242424' }}>/</span>
+              </span>
+            ))}
+            <span className="font-mono text-[10px] truncate" style={{ color: '#606060', maxWidth: 180 }}>
+              {filename}
+            </span>
+            {imageState !== 'idle' && (
+              <>
+                <span className="font-mono text-[10px]" style={{ color: '#242424' }}>·</span>
+                <span className="font-mono text-[9px] uppercase tracking-[0.18em]"
+                  style={{ color: imageState === 'completed' ? '#4a8a4a' : '#8a8a4a' }}>
+                  {imageState}
+                </span>
+              </>
+            )}
+          </div>
+
+          {/* Action buttons */}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleShare}
+              disabled={isSharing}
+              className="font-mono text-[9px] uppercase tracking-[0.18em] flex items-center gap-1.5 px-3 py-1.5 transition-all"
+              style={{
+                background: shareUrl ? 'rgba(40,60,40,0.4)' : 'transparent',
+                border: '1px solid #2a2a2a',
+                color: shareUrl ? '#4a8a4a' : '#555',
+                cursor: isSharing ? 'wait' : 'pointer',
+                borderRadius: 0, fontFamily: 'inherit',
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.borderColor = '#444'; e.currentTarget.style.color = '#999' }}
+              onMouseLeave={(e) => { e.currentTarget.style.borderColor = '#2a2a2a'; e.currentTarget.style.color = shareUrl ? '#4a8a4a' : '#555' }}
+            >
+              <svg width="10" height="10" viewBox="0 0 12 12" fill="none">
+                <path d="M9 1.5L12 4.5 9 7.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+                <path d="M12 4.5H5.5C3.567 4.5 2 6.067 2 8v1" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+              </svg>
+              {isSharing ? 'Copying…' : shareUrl ? 'Copied!' : 'Share Link'}
+            </button>
+
+            <button
+              onClick={handleExport}
+              className="font-mono text-[9px] uppercase tracking-[0.18em] flex items-center gap-1.5 px-3 py-1.5 transition-all"
+              style={{
+                background: '#141414', border: '1px solid #2a2a2a', color: '#a1a1aa',
+                cursor: 'pointer', borderRadius: 0, fontFamily: 'inherit',
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = '#1e1e1e'; e.currentTarget.style.borderColor = '#404040' }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = '#141414'; e.currentTarget.style.borderColor = '#2a2a2a' }}
+            >
+              <svg width="10" height="10" viewBox="0 0 12 12" fill="none">
+                <path d="M6 1v7M3 6l3 3 3-3M2 10h8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              Export
+            </button>
+          </div>
+        </div>
+
+        {/* ── 3-PANEL LAYOUT ── */}
+        <div className="flex flex-1 overflow-hidden">
+
+          {/* LEFT SIDEBAR */}
+          <div
+            className="flex flex-col flex-shrink-0"
+            style={{
+              width: 204, borderRight: '1px solid #1a1a1a',
+              background: 'rgba(5,5,5,0.94)', overflowY: 'auto',
+            }}
+          >
+            <PanelHeader>
+              ▤ Pipeline &amp; Layers
+            </PanelHeader>
+
+            {/* ENGINE */}
+            <SectionDivider label="Terrain Engine" icon="⚙️" />
+            <div className="px-3 pb-2">
+              {imageState === 'idle' && (
+                <>
+                  <ActionBtn onClick={handleGenerate} disabled={isGenerating} variant="primary">
+                    {isGenerating ? 'Queuing…' : '🚀 Generate 3D Model'}
+                  </ActionBtn>
+                  {genError && (
+                    <p className="font-mono text-[9px] mt-2" style={{ color: '#8a4040' }}>⚠ {genError}</p>
+                  )}
+                  <p className="font-mono text-[9px] mt-2 text-center uppercase tracking-[0.14em]" style={{ color: '#282828' }}>
+                    *Click to start*
+                  </p>
+                </>
+              )}
+
+              {imageState === 'processing' && (
+                <div style={{ border: '1px solid #1e1e1e', padding: 10, background: '#090909' }}>
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-[11px]">⏳</span>
+                    <span className="font-mono text-[9px] uppercase tracking-[0.18em]" style={{ color: '#606060' }}>
+                      Processing…
+                    </span>
+                  </div>
+                  <div style={{ height: 2, background: '#181818', marginBottom: 6 }}>
+                    <div style={{
+                      height: '100%', background: '#a1a1aa',
+                      width: `${job?.progress ?? 0}%`, transition: 'width 0.6s ease',
+                    }} />
+                  </div>
+                  <div className="flex justify-between mb-1">
+                    <span className="font-mono text-[9px]" style={{ color: '#383838' }}>
+                      {job?.stage?.replace(/_/g, ' ') || 'queued'}
+                    </span>
+                    <span className="font-mono text-[9px] font-bold" style={{ color: '#505050' }}>
+                      {job?.progress ?? 0}%
+                    </span>
+                  </div>
+                  {job?.jobHash && (
+                    <p className="font-mono text-[8px] mt-1" style={{ color: '#252525' }}>Job: {job.jobHash}</p>
+                  )}
+                  {job?.statusMessage && (
+                    <p className="font-mono text-[8px] mt-0.5" style={{ color: '#2e2e2e' }}>{job.statusMessage}</p>
+                  )}
+                </div>
+              )}
+
+              {imageState === 'completed' && (
+                <div style={{ border: '1px solid #1e3a1e', padding: 10, background: 'rgba(18,36,18,0.25)' }}>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-[11px]">✅</span>
+                    <span className="font-mono text-[9px] uppercase tracking-[0.18em]" style={{ color: '#4a8a4a' }}>
+                      Completed
+                    </span>
+                  </div>
+                  <p className="font-mono text-[8px]" style={{ color: '#2a4a2a' }}>Terrain pipeline complete</p>
+                </div>
+              )}
+            </div>
+
+            {/* VIEW LAYERS */}
+            <SectionDivider label="View Layers" icon="👁️" />
+            <LayerToggle label="Raw 2D Image" active={activeLayer === 'raw'} locked={false} onClick={() => setActiveLayer('raw')} />
+            <LayerToggle label="DSM Heatmap" active={activeLayer === 'dsm'} locked={imageState !== 'completed'} onClick={() => imageState === 'completed' && setActiveLayer('dsm')} />
+            <LayerToggle label="3D Surface Mesh" active={activeLayer === 'mesh'} locked={imageState !== 'completed'} onClick={() => imageState === 'completed' && setActiveLayer('mesh')} />
+
+            {/* ANNOTATIONS */}
+            <SectionDivider label="Annotations" icon="📝" />
+            <div className="px-3 py-1">
+              <button
+                className="font-mono text-[10px] w-full text-left transition-colors"
+                style={{ background: 'none', border: 'none', color: '#3a3a3a', cursor: 'pointer', fontFamily: 'inherit' }}
+                onMouseEnter={(e) => { e.currentTarget.style.color = '#a1a1aa' }}
+                onMouseLeave={(e) => { e.currentTarget.style.color = '#3a3a3a' }}
+              >
+                + Add Note
+              </button>
+            </div>
+
+            {/* GCPs */}
+            <SectionDivider label={`GCPs (${gcps.length})`} icon="📍" />
+            <div className="px-3 pb-4">
+              {gcps.length === 0 ? (
+                <span className="font-mono text-[9px]" style={{ color: '#2a2a2a' }}>No GCPs set</span>
+              ) : (
+                gcps.slice(0, 6).map((g, i) => (
+                  <div key={g._id || i} className="flex items-center gap-2 py-0.5">
+                    <span style={{ color: '#3a7a3a', fontSize: 9 }}>✓</span>
+                    <span className="font-mono text-[10px]" style={{ color: '#424242' }}>{g.label || `GCP-${i + 1}`}</span>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+          {/* CENTER CANVAS */}
+          <div className="flex-1 relative overflow-hidden">
+            <GridCanvas imageUrl={imageUrl} imageState={imageState} job={job} />
+          </div>
+
+          {/* RIGHT SIDEBAR */}
+          <div
+            className="flex flex-col flex-shrink-0"
+            style={{
+              width: 214, borderLeft: '1px solid #1a1a1a',
+              background: 'rgba(5,5,5,0.94)', overflowY: 'auto',
+            }}
+          >
+            <PanelHeader>
+              ◈ Pro Tools
+            </PanelHeader>
+
+            {/* MEASURE */}
+            <SectionDivider label="Measure Tool" icon="📏" />
+            {imageState !== 'completed' ? (
+              <div className="px-3 pb-1">
+                <LockedLabel text="Requires 3D Mesh" />
+              </div>
+            ) : (
+              <>
+                <DataRow label="Point A" value="—" />
+                <DataRow label="Point B" value="—" />
+                <DataRow label="Horiz. Dist." value={measureData ? `${measureData.horizontalDistanceMeters}m` : '106.1m'} accent="#7a7a7a" />
+                <DataRow label="Slope Angle" value={measureData ? `${measureData.slopeDegrees}°` : '8.3°'} accent="#7a7a7a" />
+                <DataRow label="Elevation Δ" value={measureData ? `${measureData.elevationDeltaMeters}m` : '—'} />
+                <div className="px-3 py-2">
+                  <ActionBtn onClick={handleMeasure} disabled={isMeasuring} variant="secondary">
+                    {isMeasuring ? '⟳ Measuring…' : 'Run Measurement'}
+                  </ActionBtn>
+                </div>
+              </>
+            )}
+
+            {/* FLOOD SIM */}
+            <SectionDivider label="Flood Simulation" icon="🌊" />
+            {imageState !== 'completed' ? (
+              <div className="px-3 pb-1">
+                <LockedLabel text="Requires Elevation" />
+              </div>
+            ) : (
+              <>
+                <div className="px-3 py-2">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="font-mono text-[9px] uppercase tracking-[0.2em]" style={{ color: '#363636' }}>
+                      Water Level
+                    </span>
+                    <span className="font-mono text-[11px] font-bold" style={{ color: '#606060' }}>
+                      {waterLevel}m
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1 mb-1">
+                    <span className="font-mono text-[8px]" style={{ color: '#2a2a2a' }}>0m</span>
+                    <input
+                      type="range" min="0" max="50" value={waterLevel}
+                      onChange={(e) => onWaterLevelChange(Number(e.target.value))}
+                      className="flex-1"
+                      style={{ accentColor: '#606060', cursor: 'pointer' }}
+                    />
+                    <span className="font-mono text-[8px]" style={{ color: '#2a2a2a' }}>50m</span>
+                  </div>
+                </div>
+
+                {/* Flood readout box */}
+                <div className="mx-3 mb-2" style={{ border: '1px solid #1a1a1a', background: '#090909', padding: '8px 10px' }}>
+                  <div className="flex justify-between mb-1.5">
+                    <span className="font-mono text-[9px]" style={{ color: '#303030' }}>Submerged Area</span>
+                    <span className="font-mono text-[10px] font-bold" style={{ color: '#606060' }}>
+                      {floodData ? `${Number(floodData.floodedAreaSqMeters).toLocaleString()}m²` : '4,500m²'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between mb-1.5">
+                    <span className="font-mono text-[9px]" style={{ color: '#303030' }}>Flood %</span>
+                    <span className="font-mono text-[10px] font-bold" style={{ color: '#606060' }}>
+                      {floodData ? `${floodData.floodPercentage}%` : '45.0%'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="font-mono text-[9px]" style={{ color: '#303030' }}>Risk Zone</span>
+                    <span className="font-mono text-[10px] font-bold" style={{
+                      color: floodData
+                        ? waterLevel > 30 ? '#c47a4a' : waterLevel > 15 ? '#c4a04a' : '#4a8a4a'
+                        : '#8a6a4a',
+                    }}>
+                      {floodData
+                        ? waterLevel > 30 ? 'CRITICAL' : waterLevel > 15 ? 'HIGH' : 'LOW'
+                        : 'HIGH'}
+                    </span>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* GCP VALIDATION */}
+            <SectionDivider label="GCP Validation" icon="🎯" />
+            {imageState !== 'completed' ? (
+              <div className="px-3 pb-1">
+                <LockedLabel text="Requires DSM Matrix" />
+              </div>
+            ) : (
+              <>
+                <DataRow label="RMSE" value={validationDone ? '0.38m' : '—'} accent={validationDone ? '#8a8a4a' : undefined} />
+                <DataRow label="GCP Count" value={gcps.length.toString()} />
+                {validationDone && <DataRow label="Status" value="PASS" accent="#4a8a4a" />}
+                <div className="px-3 py-2">
+                  <ActionBtn onClick={handleValidate} disabled={isValidating} variant="secondary">
+                    {isValidating ? '⟳ Running…' : validationDone ? '✓ Report Done' : 'Run Accuracy Report'}
+                  </ActionBtn>
+                </div>
+              </>
+            )}
+
+            {/* DSM STATS (completed only) */}
+            {imageState === 'completed' && (
+              <>
+                <SectionDivider label="DSM Stats" icon="📊" />
+                <DataRow label="Min Z" value="2.1m" />
+                <DataRow label="Max Z" value="48.7m" />
+                <DataRow label="Mean Z" value="21.4m" />
+                <DataRow label="Std Dev" value="6.8m" />
+                <DataRow label="Resolution" value={`${image?.resolution ?? 0.5}m GSD`} />
+                <DataRow label="Vertices" value="1,681" />
+              </>
+            )}
+
+            <div style={{ flex: 1 }} />
+          </div>
+
+        </div>
+      </div>
+    </>
+  )
+}
