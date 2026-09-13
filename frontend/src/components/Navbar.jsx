@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { createPortal } from 'react-dom'
 import {
   SignInButton,
@@ -235,15 +235,8 @@ function ProjectSelector({ baseUrl, getToken, routeProjectId }) {
       const json = await res.json()
       // Extract the array from the backend's ApiResponse wrapper
       const list = json.data || []
-      
       setProjects(list)
-      // Sync with URL: if we have a routeProjectId, match it; otherwise fallback to first
-      setSelectedProject(() => {
-        if (routeProjectId) {
-          return list.find(p => (p._id ?? p.id) === routeProjectId) ?? list[0] ?? null
-        }
-        return list[0] ?? null
-      })
+      // NOTE: selectedProject is managed exclusively by the sync effect below
     } catch (err) {
       console.error('ProjectSelector: fetch error —', err)
     } finally {
@@ -251,11 +244,19 @@ function ProjectSelector({ baseUrl, getToken, routeProjectId }) {
     }
   }, [baseUrl, getToken])
 
-  useEffect(() => { fetchProjects() }, [fetchProjects])
+  // Re-fetch whenever the active route project changes (navigation between projects)
+  useEffect(() => { fetchProjects() }, [fetchProjects, routeProjectId])
 
-  // ── Sync selectedProject when URL param changes ──────
+  // ── Single source of truth: sync selectedProject from URL ──
+  // Runs whenever the route changes OR the projects list is (re)loaded.
+  // routeProjectId present  → find & select the matching project
+  // routeProjectId absent   → clear selection (user is on /projects hub)
   useEffect(() => {
-    if (!routeProjectId || projects.length === 0) return
+    if (projects.length === 0) return          // wait for list to load
+    if (!routeProjectId) {
+      setSelectedProject(null)                  // on /projects → "Select a Project"
+      return
+    }
     const match = projects.find(p => (p._id ?? p.id) === routeProjectId)
     if (match) setSelectedProject(match)
   }, [routeProjectId, projects])
@@ -295,10 +296,12 @@ function ProjectSelector({ baseUrl, getToken, routeProjectId }) {
     setIsDropdownOpen(false)
     // Navigate into the new project
     navigate(`/projects/${newProject._id ?? newProject.id}`)
+    // Re-fetch the full list so the dropdown is always in sync
+    await fetchProjects()
     // isModalOpen closed by modal itself after onConfirm resolves
-  }, [baseUrl, getToken])
+  }, [baseUrl, getToken, navigate, fetchProjects])
 
-  const displayName = selectedProject?.name ?? 'Select Project...'
+  const displayName = selectedProject?.name ?? 'Select a Project'
 
   return (
     <div ref={wrapperRef} className="relative ml-6">
@@ -450,8 +453,11 @@ function ProjectSelector({ baseUrl, getToken, routeProjectId }) {
 export default function Navbar() {
   const { getToken, isSignedIn } = useAuth()
   const baseUrl = import.meta.env.VITE_API_BASE_URL
-  // Read the active project from the URL (undefined on non-project routes)
-  const { projectId: routeProjectId } = useParams()
+  // Parse the active projectId directly from the URL pathname.
+  // useParams() only works inside a <Route> context — Navbar is outside <Routes>,
+  // so useLocation() + regex is the correct approach here.
+  const { pathname } = useLocation()
+  const routeProjectId = pathname.match(/^\/projects\/([^/]+)/)?.[1] ?? null
 
   return (
     <header
@@ -469,12 +475,19 @@ export default function Navbar() {
 
         {/* ── Left: Logo + Project Selector ── */}
         <div className="flex items-center flex-shrink-0">
-          <img
-            src={fullLogo}
-            alt="DepthWizard"
-            style={{ height: '84px', width: 'auto', objectFit: 'contain' }}
-            draggable={false}
-          />
+          {/* Logo — click to go to /projects hub */}
+          <button
+            onClick={() => navigate('/projects')}
+            className="cursor-pointer flex-shrink-0"
+            style={{ background: 'none', border: 'none', padding: 0 }}
+          >
+            <img
+              src={fullLogo}
+              alt="DepthWizard"
+              style={{ height: '84px', width: 'auto', objectFit: 'contain' }}
+              draggable={false}
+            />
+          </button>
 
           {/* Project Selector — authenticated users only */}
           <SignedIn>

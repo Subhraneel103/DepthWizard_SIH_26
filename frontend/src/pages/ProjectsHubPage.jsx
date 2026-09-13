@@ -145,48 +145,55 @@ function CreateProjectModal({ onClose, onConfirm }) {
   )
 }
 
-// ── Project Card ──────────────────────────────────────
+// ── Project Card (no thumbnail) ────────────────────────
 function ProjectCard({ project, onClick }) {
   const imageCount = project.imageCount ?? project.images?.length ?? 0
+  const date = project.createdAt
+    ? new Date(project.createdAt).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+    : null
+
   return (
     <button
       onClick={onClick}
-      className="flex flex-col text-left transition-all duration-200 group cursor-pointer"
+      className="flex flex-col text-left transition-all duration-200 cursor-pointer w-full"
       style={{
         background: '#0f0f0f',
         border: '1px solid #1e1e1e',
-        padding: '24px',
-        width: '100%',
+        padding: '24px 28px',
       }}
       onMouseEnter={e => { e.currentTarget.style.borderColor = '#333333'; e.currentTarget.style.background = '#141414' }}
       onMouseLeave={e => { e.currentTarget.style.borderColor = '#1e1e1e'; e.currentTarget.style.background = '#0f0f0f' }}
     >
-      {/* Thumbnail strip */}
-      <div
-        className="w-full mb-5 flex items-center justify-center"
-        style={{
-          height: '130px',
-          background: '#0a0a0a',
-          border: '1px solid #1a1a1a',
-        }}
-      >
-        {project.thumbnailUrl ? (
-          <img src={project.thumbnailUrl} alt="" className="w-full h-full object-cover" />
-        ) : (
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="none">
-            <rect x="3" y="5" width="18" height="14" rx="1" stroke="#2a2a2a" strokeWidth="1.2" />
-            <circle cx="8.5" cy="10" r="1.5" stroke="#2a2a2a" strokeWidth="1.2" />
-            <path d="M3 16l5-4 4 3 3-2 6 4" stroke="#2a2a2a" strokeWidth="1.2" strokeLinejoin="round" />
-          </svg>
-        )}
+      {/* Folder icon + name row */}
+      <div className="flex items-start gap-3 mb-4">
+        <span className="text-[#444444] text-xl mt-0.5 flex-shrink-0">📁</span>
+        <span className="font-mono text-[15px] font-semibold text-white tracking-wide leading-snug">
+          {project.name}
+        </span>
       </div>
 
-      <span className="font-mono text-[15px] font-semibold text-white tracking-wide truncate w-full block mb-1">
-        {project.name}
-      </span>
-      <span className="font-mono text-[12px] text-[#555555] mt-1">
-        {imageCount} {imageCount === 1 ? 'image' : 'images'}
-      </span>
+      {/* Details */}
+      <div className="flex flex-col gap-2 pl-1">
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-[11px] text-[#444444]">
+            {imageCount} {imageCount === 1 ? 'image' : 'images'}
+          </span>
+          {imageCount > 0 && (
+            <span className="text-[#2a2a2a] text-[10px]">·</span>
+          )}
+        </div>
+        {date && (
+          <span className="font-mono text-[11px] text-[#383838]">{date}</span>
+        )}
+        <StatusBadge status={project.status ?? 'draft'} />
+      </div>
+
+      {/* Arrow hint */}
+      <div className="mt-5 pt-4" style={{ borderTop: '1px solid #1a1a1a' }}>
+        <span className="font-mono text-[10px] text-[#333333] uppercase tracking-[0.15em]">
+          Open project →
+        </span>
+      </div>
     </button>
   )
 }
@@ -212,35 +219,97 @@ function CreateNewCard({ onClick }) {
   )
 }
 
-// ── Recent Image Card ─────────────────────────────────
+// ── Recent Card (shows real image preview) ───────────────
+// Priority: 3D result image > latest 2D upload > empty state
 function RecentCard({ project, onClick }) {
+  // 3D result: backend may store it as resultUrl, outputUrl, or result.url
+  const resultUrl = project.resultUrl ?? project.outputUrl ?? project.result?.url ?? null
+  const isCompleted = !!resultUrl || project.status?.toLowerCase() === 'completed'
+
+  // Best 2D preview: last image (most recently uploaded) first
+  const images = project.images ?? []
+  const lastImage = images[images.length - 1]   // most recent upload
+  const inputUrl  = lastImage?.thumbnailUrl ?? lastImage?.url ?? null
+
+  // What we actually show: 3D result takes priority
+  const displayUrl  = resultUrl ?? inputUrl
+  const is3D        = !!resultUrl
+  const imageCount  = project.imageCount ?? images.length
+
   return (
     <button
       onClick={onClick}
-      className="flex flex-col text-left cursor-pointer transition-all duration-200"
+      className="flex flex-col text-left cursor-pointer transition-all duration-200 group relative overflow-hidden"
       style={{
         background: '#0f0f0f',
         border: '1px solid #1e1e1e',
-        padding: '24px',
+        padding: 0,
       }}
-      onMouseEnter={e => { e.currentTarget.style.borderColor = '#333333'; e.currentTarget.style.background = '#141414' }}
-      onMouseLeave={e => { e.currentTarget.style.borderColor = '#1e1e1e'; e.currentTarget.style.background = '#0f0f0f' }}
+      onMouseEnter={e => { e.currentTarget.style.borderColor = '#333333' }}
+      onMouseLeave={e => { e.currentTarget.style.borderColor = '#1e1e1e' }}
     >
-      {/* Thumbnail */}
+      {/* Image preview */}
       <div
-        className="w-full mb-4 flex items-center justify-center"
-        style={{ height: '100px', background: '#0a0a0a', border: '1px solid #1a1a1a' }}
+        className="w-full relative flex items-center justify-center overflow-hidden"
+        style={{ height: '160px', background: '#0a0a0a' }}
       >
-        <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
-          <rect x="3" y="5" width="18" height="14" rx="1" stroke="#2e2e2e" strokeWidth="1.2" />
-          <circle cx="8.5" cy="10" r="1.5" stroke="#2e2e2e" strokeWidth="1.2" />
-          <path d="M3 16l5-4 4 3 3-2 6 4" stroke="#2e2e2e" strokeWidth="1.2" strokeLinejoin="round" />
-        </svg>
+        {displayUrl ? (
+          <>
+            <img
+              src={displayUrl}
+              alt={project.name}
+              className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+            />
+            {/* 2D / 3D badge */}
+            <span
+              className="absolute top-3 right-3 font-mono text-[10px] uppercase tracking-[0.2em] px-2.5 py-1"
+              style={{
+                background: is3D ? 'rgba(0,0,0,0.92)' : 'rgba(0,0,0,0.80)',
+                color: is3D ? '#d4d4d4' : '#737373',
+                border: `1px solid ${is3D ? '#555555' : '#2a2a2a'}`,
+                letterSpacing: '0.18em',
+              }}
+            >
+              {is3D ? '◈ 3D' : '▦ 2D'}
+            </span>
+          </>
+        ) : (
+          // No imagery yet — show subtle placeholder
+          <div className="flex flex-col items-center gap-3">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+              <rect x="3" y="5" width="18" height="14" rx="1" stroke="#252525" strokeWidth="1.2" />
+              <circle cx="8.5" cy="10" r="1.5" stroke="#252525" strokeWidth="1.2" />
+              <path d="M3 16l5-4 4 3 3-2 6 4" stroke="#252525" strokeWidth="1.2" strokeLinejoin="round" />
+            </svg>
+            <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-[#2a2a2a]">
+              {imageCount === 0 ? 'No imagery yet' : `${imageCount} image${imageCount !== 1 ? 's' : ''}`}
+            </span>
+          </div>
+        )}
+
+        {/* Hover gradient overlay */}
+        <div
+          className="absolute inset-0 flex items-end justify-start p-3 opacity-0 group-hover:opacity-100 transition-opacity duration-200"
+          style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.7) 0%, transparent 60%)' }}
+        >
+          <span className="font-mono text-[9px] uppercase tracking-[0.15em] text-white">Open ↗</span>
+        </div>
       </div>
-      <span className="font-mono text-[15px] font-semibold text-[#d4d4d4] truncate w-full block mb-2">
-        {project.name}
-      </span>
-      <StatusBadge status={project.status ?? 'draft'} />
+
+      {/* Text meta */}
+      <div className="px-5 py-4">
+        <span className="font-mono text-[14px] font-semibold text-[#d4d4d4] truncate w-full block mb-2">
+          {project.name}
+        </span>
+        <div className="flex items-center gap-3">
+          <StatusBadge status={project.status ?? 'draft'} />
+          {imageCount > 0 && (
+            <span className="font-mono text-[10px] text-[#383838]">
+              {imageCount} image{imageCount !== 1 ? 's' : ''}
+            </span>
+          )}
+        </div>
+      </div>
     </button>
   )
 }
@@ -268,10 +337,10 @@ export default function ProjectsHubPage() {
   const [isLoading, setIsLoading]   = useState(true)
   const [isModalOpen, setIsModalOpen] = useState(false)
 
-  // ── Fetch all projects ────────────────────────────
-  const fetchProjects = useCallback(async () => {
+  // silent=true skips the loading skeleton (used for background polls)
+  const fetchProjects = useCallback(async (silent = false) => {
     try {
-      setIsLoading(true)
+      if (!silent) setIsLoading(true)
       const token = await getToken()
       const res   = await fetch(`${baseUrl}/projects`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -283,11 +352,27 @@ export default function ProjectsHubPage() {
     } catch (err) {
       console.error('ProjectsHub: fetch error —', err)
     } finally {
-      setIsLoading(false)
+      if (!silent) setIsLoading(false)
     }
   }, [baseUrl, getToken])
 
   useEffect(() => { fetchProjects() }, [fetchProjects])
+
+  // ── Live refresh ──────────────────────────────────────────
+  // Poll every 20s + listen for same-tab CustomEvents from ProjectDetailPage
+  // (fired after: image upload, project delete, 3D result generated)
+  useEffect(() => {
+    const interval = setInterval(() => fetchProjects(true), 20_000)
+
+    // CustomEvent fires in the SAME tab — unlike 'storage' which only fires in OTHER tabs
+    const handleActivity = () => fetchProjects(true)
+    window.addEventListener('dw_activity', handleActivity)
+
+    return () => {
+      clearInterval(interval)
+      window.removeEventListener('dw_activity', handleActivity)
+    }
+  }, [fetchProjects])
 
   // ── Create project ────────────────────────────────
   const handleCreate = useCallback(async (projectName) => {
@@ -311,8 +396,14 @@ export default function ProjectsHubPage() {
     navigate(`/projects/${created._id ?? created.id}`)
   }, [baseUrl, getToken, navigate])
 
-  // Recent = last 3 projects (or however many we have)
-  const recent = projects.slice(-3).reverse()
+  // Recent = 3 most recently active projects (sorted by updatedAt then createdAt)
+  const recent = [...projects]
+    .sort((a, b) => {
+      const ta = new Date(a.updatedAt ?? a.createdAt ?? 0).getTime()
+      const tb = new Date(b.updatedAt ?? b.createdAt ?? 0).getTime()
+      return tb - ta  // newest first
+    })
+    .slice(0, 3)
 
   return (
     <div
