@@ -3,6 +3,7 @@ import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
 import { clerkMiddleware } from "@clerk/express";
+import "./workers/process.worker.js"; // Ensure the worker is initialized when the app starts
 
 // Route imports (matches your project.route.js filename)
 import projectRouter from "./routes/project.route.js";

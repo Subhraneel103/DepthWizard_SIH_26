@@ -1,18 +1,21 @@
-import Job from "../models/Jobs.model.js";
+// src/controllers/jobController.js
 import asyncHandler from "../utils/asyncHandler.js";
 import ApiError from "../utils/ApiError.js";
 import ApiResponse from "../utils/ApiResponse.js";
+import Job from "../models/Jobs.model.js";
 
-// GET /api/jobs/:jobId
 export const getJobStatus = asyncHandler(async (req, res) => {
     const { jobId } = req.params;
+    
+    // 1. Try to find by Job ID (used during the active progress bar polling)
+    let job = await Job.findById(jobId).catch(() => null);
 
-    // Populate basic image details so the frontend has context on what is being processed
-    const job = await Job.findById(jobId).populate("image", "filename storagePath project");
-
+    // 2. If not found, React might have sent the Image ID (used on initial page load)
     if (!job) {
-        throw new ApiError(404, "Processing job not found");
+        job = await Job.findOne({ image: jobId }).sort({ createdAt: -1 });
     }
+
+    if (!job) throw new ApiError(404, "Job not found");
 
     return res.status(200).json(
         new ApiResponse(
@@ -20,18 +23,12 @@ export const getJobStatus = asyncHandler(async (req, res) => {
             {
                 jobId: job._id,
                 jobHash: job.jobHash,
-                status: job.status,               // 'queued' | 'active' | 'completed' | 'failed'
-                stage: job.stage,                 // 'preprocess' | 'depth_inference' | 'calibration' | 'mesh_generation' | 'finalizing'
-                progress: job.progress,           // 0 - 100
-                statusMessage: job.statusMessage,
-                errorMessage: job.errorMessage,
-                backbone: job.backbone,
-                calibMethod: job.calibMethod,
-                image: job.image,
-                createdAt: job.createdAt,
-                updatedAt: job.updatedAt
+                status: job.status,
+                stage: job.stage,
+                progress: job.progress,
+                statusMessage: job.statusMessage
             },
-            "Job status retrieved successfully"
+            "Job status fetched successfully"
         )
     );
 });

@@ -108,6 +108,11 @@ function ImageCard({ image, projectId, navigate, baseUrl }) {
   const imageUrl = buildImageUrl(image.storagePath, baseUrl) || image.thumbnailUrl || image.url || null
   const [imgError, setImgError] = useState(false)
 
+  // Detect if it's a .tif file — browsers can't natively render TIF,
+  // so we'll still try the URL (backend may serve a converted JPEG preview)
+  // but show a geo-raster icon if it fails
+  const isTif = filename.toLowerCase().endsWith('.tif')
+
   return (
     <GlowCard
       onClick={() => navigate('/projects/' + projectId + '/workspace/' + (image._id || image.id))}
@@ -126,13 +131,28 @@ function ImageCard({ image, projectId, navigate, baseUrl }) {
             className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105 group-hover:brightness-110"
           />
         ) : (
-          <div className="flex flex-col items-center gap-2" style={{ opacity: 0.3 }}>
-            <svg width="38" height="38" viewBox="0 0 24 24" fill="none">
-              <rect x="3" y="5" width="18" height="14" rx="2" stroke="#888" strokeWidth="1.2" />
-              <circle cx="8.5" cy="10" r="1.5" stroke="#888" strokeWidth="1.2" />
-              <path d="M3 16l5-4 4 3 3-2 6 4" stroke="#888" strokeWidth="1.2" strokeLinejoin="round" />
-            </svg>
-            <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-[#555]">No preview</span>
+          <div className="flex flex-col items-center gap-2" style={{ opacity: isTif && !imgError ? 0.7 : 0.3 }}>
+            {isTif ? (
+              // GeoTIF icon
+              <>
+                <svg width="38" height="44" viewBox="0 0 38 44" fill="none">
+                  <rect x="1" y="1" width="28" height="36" rx="3" stroke="#666" strokeWidth="1.2" fill="none" />
+                  <path d="M22 1v9h9" stroke="#666" strokeWidth="1.2" />
+                  <rect x="1" y="28" width="36" height="14" rx="3" fill="#1a2a1a" stroke="#3a6a3a" strokeWidth="1" />
+                  <text x="4" y="39" fontFamily="monospace" fontSize="7" fill="#4a9a4a">.TIF</text>
+                </svg>
+                <span className="font-mono text-[10px] uppercase tracking-[0.15em]" style={{ color: '#3a6a3a' }}>GeoRaster</span>
+              </>
+            ) : (
+              <>
+                <svg width="38" height="38" viewBox="0 0 24 24" fill="none">
+                  <rect x="3" y="5" width="18" height="14" rx="2" stroke="#888" strokeWidth="1.2" />
+                  <circle cx="8.5" cy="10" r="1.5" stroke="#888" strokeWidth="1.2" />
+                  <path d="M3 16l5-4 4 3 3-2 6 4" stroke="#888" strokeWidth="1.2" strokeLinejoin="round" />
+                </svg>
+                <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-[#555]">No preview</span>
+              </>
+            )}
           </div>
         )}
 
@@ -241,7 +261,7 @@ function UploadZone({ onFilesSelected }) {
         <span className="text-[#737373] underline underline-offset-2">Browse Files</span>
       </p>
       <p className="font-mono text-[11px] text-[#2a2a2a] mt-4 uppercase tracking-[0.15em]">
-        JPG · PNG · TIFF · WebP
+        JPG · PNG · TIF · WebP
       </p>
     </div>
   )

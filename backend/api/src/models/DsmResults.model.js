@@ -26,7 +26,7 @@ const dsmResultSchema = new mongoose.Schema({
   // Model & calibration configuration used for this run
   modelBackbone: {
     type: String,
-    enum: ['small', 'base', 'large', 'vit-s', 'vit-b', 'vit-l'],
+    enum: ['small', 'base', 'large'],
     default: 'small',
   },
   calibrationMethod: {

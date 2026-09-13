@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '@clerk/clerk-react'
+import { createPortal } from 'react-dom'
 import HeroBackground from '../components/HeroBackground'
 
 const NAVBAR_H = 108
@@ -302,9 +303,11 @@ export default function WorkspacePage() {
   const [image, setImage]       = useState(null)
   const [project, setProject]   = useState(null)
   const [meshData, setMeshData] = useState(null)   // GET .../mesh
-  const [dsmData, setDsmData]   = useState(null)   // GET .../dsm
+  const [dsmData, setDsmData]   = useState(null)   // GET .../dsm  (stats: minZ/maxZ/meanZ/stdDev)
   const [gcps, setGcps]         = useState([])     // GET .../gcps
   const [job, setJob]           = useState(null)
+  const [dsmResultId, setDsmResultId] = useState(null) // _id from DsmResult — needed for validate
+  const [validationReport, setValidationReport] = useState(null) // GET .../validation-report
 
   // ── UI state ──
   const [isLoading, setIsLoading]         = useState(true)
@@ -314,6 +317,8 @@ export default function WorkspacePage() {
   const [genError, setGenError]           = useState(null)
   const [noteText, setNoteText]           = useState('')
   const [isSavingNote, setIsSavingNote]   = useState(false)
+  const [annotations, setAnnotations]     = useState([])
+  const [selectedAnnotation, setSelectedAnnotation] = useState(null) // for modal
   const [measureData, setMeasureData]     = useState(null)
   const [isMeasuring, setIsMeasuring]     = useState(false)
   const [waterLevel, setWaterLevel]       = useState(15)
@@ -333,7 +338,6 @@ export default function WorkspacePage() {
     : (job?.status === 'active' || job?.status === 'queued') ? 'processing'
     : 'idle'
 
-  // ── Mount: fetch all initial data ──
   const load = useCallback(async () => {
     try {
       setIsLoading(true)
@@ -349,21 +353,56 @@ export default function WorkspacePage() {
         setProject(projData)
       } catch {}
 
-      // GET /api/images/:imageId/mesh
+      // GET /api/images/:imageId/mesh — stats: vertexCount, faceCount, minElevation, maxElevation
       try {
         const mesh = await apiFetch(baseUrl + '/images/' + imageId + '/mesh', token)
         setMeshData(mesh)
       } catch {}
 
-      // GET /api/images/:imageId/dsm
+      // GET /api/images/:imageId/dsm — stats: minZ, maxZ, meanZ, stdDev + rasterUrl
       try {
         const dsm = await apiFetch(baseUrl + '/images/' + imageId + '/dsm', token)
         setDsmData(dsm)
+        // dsmResultId may be embedded in DSM response if the pipeline stores it
+        if (dsm?._id || dsm?.dsmResultId) {
+          const rid = dsm._id || dsm.dsmResultId
+          setDsmResultId(rid)
+          // Try to fetch existing validation report for this DSM result
+          try {
+            const report = await apiFetch(baseUrl + '/dsm-results/' + rid + '/validation-report', token)
+            setValidationReport(report)
+          } catch {}
+        }
+      } catch {}
+
+      // GET /api/images/:imageId/annotations
+      try {
+        const annData = await apiFetch(baseUrl + '/images/' + imageId + '/annotations', token)
+        setAnnotations(Array.isArray(annData) ? annData : [])
       } catch {}
 
       // GET /api/images/:imageId/gcps
-      const gcpData = await apiFetch(baseUrl + '/images/' + imageId + '/gcps', token)
-      setGcps(gcpData || [])
+      try {
+        const gcpData = await apiFetch(baseUrl + '/images/' + imageId + '/gcps', token)
+        setGcps(gcpData || [])
+      } catch {}
+
+      // ── Restore latest job for this image ──
+      // Route: GET /api/jobs/:jobId where :jobId = imageId
+      // Backend matches Job.image === imageId and returns the latest job.
+      try {
+        const jobData = await apiFetch(baseUrl + '/jobs/' + imageId, token)
+        if (jobData) {
+          // jobData is a single job object (latest for this image)
+          setJob(jobData)
+          // If still running, resume 2.5s poll using the real job _id
+          const jid = jobData.jobId || jobData._id
+          if ((jobData.status === 'active' || jobData.status === 'queued') && jid) {
+            clearInterval(pollRef.current)
+            pollRef.current = setInterval(() => pollJob(jid), 2500)
+          }
+        }
+      } catch {}
 
     } catch (err) {
       setError(err.message)
@@ -400,7 +439,7 @@ export default function WorkspacePage() {
       setIsGenerating(true); setGenError(null)
       const token = await getToken()
       const jobData = await apiFetch(baseUrl + '/images/' + imageId + '/process', token,
-        { method: 'POST', body: JSON.stringify({ backbone: 'vit-l' }) })
+        { method: 'POST', body: JSON.stringify({ backbone: 'large' }) })
       setJob({ ...jobData, status: jobData.status || 'queued' })
       clearInterval(pollRef.current)
       pollRef.current = setInterval(() => pollJob(jobData.jobId), 2500)
@@ -409,13 +448,32 @@ export default function WorkspacePage() {
   }, [baseUrl, imageId, getToken, pollJob])
 
   // ── POST /api/images/:imageId/annotations ──
+  // Backend requires: label + coordinates (from addAnnotation controller)
   const handleSaveNote = useCallback(async () => {
     if (!noteText.trim()) return
     try {
       setIsSavingNote(true)
       const token = await getToken()
-      await apiFetch(baseUrl + '/images/' + imageId + '/annotations', token,
-        { method: 'POST', body: JSON.stringify({ note: noteText.trim() }) })
+      const saved = await apiFetch(baseUrl + '/images/' + imageId + '/annotations', token,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            label: noteText.trim().slice(0, 60), // label field required by backend
+            coordinates: { x: 0, y: 0 },          // coordinates field required by backend
+            notes: noteText.trim(),                // full text goes in notes
+          })
+        })
+      // Backend returns the full updated annotations array
+      const newList = Array.isArray(saved) ? saved : []
+      if (newList.length > 0) {
+        setAnnotations(newList)
+      } else {
+        // Optimistic fallback if backend returns single item or null
+        setAnnotations(prev => [
+          { note: noteText.trim(), notes: noteText.trim(), label: noteText.trim().slice(0,60), createdAt: new Date().toISOString(), _id: Date.now() },
+          ...prev
+        ])
+      }
       setNoteText('')
     } catch (err) { console.error(err) }
     finally { setIsSavingNote(false) }
@@ -455,16 +513,37 @@ export default function WorkspacePage() {
   }, [imageState])
 
   // ── POST /api/dsm-results/:dsmResultId/validate ──
-  const handleValidate = useCallback(() => {
-    setIsValidating(true)
-    setTimeout(() => { setIsValidating(false); setValidationDone(true) }, 1800)
-  }, [])
+  // Returns: { metrics: { rmse, mae, maxError }, accuracyGrade, residuals }
+  // Then stores the report. Also fetches GET .../validation-report on success.
+  const handleValidate = useCallback(async () => {
+    if (!dsmResultId) {
+      // No dsmResultId yet — show friendly error
+      console.warn('No DSM result ID available for validation')
+      return
+    }
+    try {
+      setIsValidating(true)
+      const token = await getToken()
+      // POST triggers upsert of ValidationReport on the backend
+      const report = await apiFetch(
+        baseUrl + '/dsm-results/' + dsmResultId + '/validate',
+        token,
+        { method: 'POST', body: JSON.stringify({}) }
+      )
+      setValidationReport(report)
+    } catch (err) {
+      console.error('Validation failed:', err)
+    } finally {
+      setIsValidating(false)
+    }
+  }, [baseUrl, dsmResultId, getToken])
 
-  // ── DELETE /api/images/:imageId/gcps/:gcpId ──
+  // ── DELETE /api/images/:imageId/gcps/:gcpId/delete ──
+  // Route: /:imageId/gcps/:gcpId/delete  (DELETE method, from image.route.js line 17)
   const handleDeleteGcp = useCallback(async (gcpId) => {
     try {
       const token = await getToken()
-      await apiFetch(baseUrl + '/images/' + imageId + '/gcps/' + gcpId, token, { method: 'DELETE' })
+      await apiFetch(baseUrl + '/images/' + imageId + '/gcps/' + gcpId + '/delete', token, { method: 'DELETE' })
       setGcps(prev => prev.filter(g => (g._id || g.id) !== gcpId))
     } catch (err) { console.error(err) }
   }, [baseUrl, imageId, getToken])
@@ -547,10 +626,14 @@ export default function WorkspacePage() {
     <>
       <HeroBackground />
 
+      {/* ── Workspace content — blurs when annotation modal is open ── */}
       <div style={{
         position: 'fixed', top: NAVBAR_H, left: 0, right: 0, bottom: 0,
         display: 'flex', flexDirection: 'column', zIndex: 1,
         padding: '14px 16px 16px', gap: 14,
+        filter: selectedAnnotation ? 'blur(14px) brightness(0.55)' : 'none',
+        transition: 'filter 0.25s ease',
+        willChange: 'filter',
       }}>
 
         {/* ══════════════════════════════════════════
@@ -658,6 +741,7 @@ export default function WorkspacePage() {
             <SubBox style={{ marginBottom: 14 }}>
               <SubBoxTitle icon="⚙️" label="Terrain Engine" />
 
+              {/* Show generate button only when NOT yet completed */}
               {imageState === 'idle' && (
                 <>
                   <PrimaryBtn onClick={handleGenerate} disabled={isGenerating}>
@@ -679,13 +763,19 @@ export default function WorkspacePage() {
                 </div>
               )}
 
+              {/* Completed: hide generate button, show success + DSM/mesh info */}
               {imageState === 'completed' && (
-                <div className="flex items-center gap-3 px-1 py-2" style={{ border: '1px solid #1e3a1e', borderRadius: 10, padding: 12, background: 'rgba(18,36,18,0.3)' }}>
-                  <span style={{ fontSize: 13 }}>✅</span>
-                  <div>
-                    <p className="font-mono text-[10px] uppercase tracking-[0.18em]" style={{ color: '#4a8a4a' }}>Completed</p>
-                    <p className="font-mono text-[9px] mt-0.5" style={{ color: '#2a4a2a' }}>Terrain pipeline complete</p>
+                <div style={{ border: '1px solid #1e3a1e', borderRadius: 10, padding: 14, background: 'rgba(18,36,18,0.28)' }}>
+                  <div className="flex items-center gap-2.5 mb-2">
+                    <span style={{ fontSize: 14 }}>✅</span>
+                    <p className="font-mono text-[10px] uppercase tracking-[0.18em]" style={{ color: '#4a8a4a' }}>3D Model Ready</p>
                   </div>
+                  <p className="font-mono text-[9px]" style={{ color: '#2a4a2a' }}>Terrain pipeline complete — all tools unlocked.</p>
+                  {job?.completedAt && (
+                    <p className="font-mono text-[9px] mt-1.5" style={{ color: '#1e3a1e' }}>
+                      {new Date(job.completedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+                    </p>
+                  )}
                 </div>
               )}
             </SubBox>
@@ -705,7 +795,9 @@ export default function WorkspacePage() {
 
             {/* ── Sub-box 3: Annotations ── */}
             <SubBox style={{ marginBottom: 14 }}>
-              <SubBoxTitle icon="📝" label="Annotations" />
+              <SubBoxTitle icon="📝" label={'Annotations' + (annotations.length ? ' (' + annotations.length + ')' : '')} />
+
+              {/* Input area */}
               <textarea
                 value={noteText}
                 onChange={(e) => setNoteText(e.target.value)}
@@ -723,7 +815,44 @@ export default function WorkspacePage() {
               <SecondaryBtn onClick={handleSaveNote} disabled={isSavingNote || !noteText.trim()}>
                 {isSavingNote ? '⟳ Saving…' : '+ Add Annotation'}
               </SecondaryBtn>
+
+              {/* Saved annotations list — GET /api/images/:imageId/annotations */}
+              {annotations.length > 0 && (
+                <div className="flex flex-col gap-2 mt-4">
+                  <div style={{ height: 1, background: '#191919', marginBottom: 4 }} />
+                  {annotations.map((ann, i) => {
+                    const id = ann._id || ann.id || i
+                    const text = ann.note || ann.text || ann.content || ''
+                    const preview = text.length > 48 ? text.slice(0, 48) + '…' : text
+                    const ts = ann.createdAt ? new Date(ann.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : ''
+                    return (
+                      <button
+                        key={id}
+                        onClick={() => setSelectedAnnotation(ann)}
+                        className="w-full text-left transition-all duration-150"
+                        style={{
+                          background: 'rgba(255,255,255,0.02)', border: '1px solid #1c1c1c',
+                          borderRadius: 9, padding: '10px 12px', cursor: 'pointer', fontFamily: 'inherit',
+                        }}
+                        onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.045)'; e.currentTarget.style.borderColor = '#2a2a2a' }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.02)'; e.currentTarget.style.borderColor = '#1c1c1c' }}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="font-mono text-[11px] leading-relaxed truncate flex-1" style={{ color: '#686868' }}>{preview}</p>
+                          {ts && <span className="font-mono text-[9px] flex-shrink-0" style={{ color: '#2e2e2e' }}>{ts}</span>}
+                        </div>
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+
+              {annotations.length === 0 && (
+                <p className="font-mono text-[10px] mt-4" style={{ color: '#272727' }}>No annotations yet.</p>
+              )}
             </SubBox>
+
+            {/* ── Annotation detail modal is rendered via portal to document.body (see end of return) ── */}
 
             {/* ── Sub-box 4: GCPs ── */}
             <SubBox>
@@ -839,26 +968,64 @@ export default function WorkspacePage() {
                 </div>
               ) : (
                 <>
+                  {/* Validation metrics \u2014 from POST /api/dsm-results/:dsmResultId/validate */}
                   <div className="flex flex-col gap-0 mb-4">
-                    <DataRow label="RMSE" value={validationDone ? '0.38m' : '—'} accent={validationDone ? '#8a8a4a' : undefined} />
+                    <DataRow
+                      label="RMSE"
+                      value={validationReport ? validationReport.metrics?.rmse + 'm' : '—'}
+                      accent={validationReport ? '#8a8a4a' : undefined}
+                    />
+                    <DataRow
+                      label="MAE"
+                      value={validationReport ? validationReport.metrics?.mae + 'm' : '—'}
+                    />
+                    <DataRow
+                      label="Max Error"
+                      value={validationReport ? validationReport.metrics?.maxError + 'm' : '—'}
+                    />
                     <DataRow label="GCP Count" value={gcps.length.toString()} />
-                    <DataRow label="Check Points" value={validationDone ? '3' : '—'} />
-                    {validationDone && <DataRow label="Status" value="PASS ✓" accent="#4a8a4a" />}
+                    <DataRow
+                      label="Check Points"
+                      value={validationReport ? (validationReport.residuals?.length ?? '—').toString() : '—'}
+                    />
+                    {validationReport && (
+                      <DataRow
+                        label="Grade"
+                        value={validationReport.accuracyGrade ?? 'A'}
+                        accent={validationReport.accuracyGrade === 'A' ? '#4a8a4a' : validationReport.accuracyGrade === 'B' ? '#8a8a4a' : '#8a4a4a'}
+                      />
+                    )}
                   </div>
-                  <SecondaryBtn onClick={handleValidate} disabled={isValidating}>
-                    {isValidating ? '⟳ Running report…' : validationDone ? '✓ View Report' : 'Run Accuracy Report'}
+
+                  <SecondaryBtn onClick={handleValidate} disabled={isValidating || !dsmResultId}>
+                    {isValidating ? '⟳ Running report…' : validationReport ? '↺ Re-run Report' : 'Run Accuracy Report'}
                   </SecondaryBtn>
-                  {imageState === 'completed' && (
+
+                  {!dsmResultId && (
+                    <p className="font-mono text-[9px] mt-2 text-center" style={{ color: '#2a2a2a' }}>
+                      DSM result ID not yet available
+                    </p>
+                  )}
+
+                  {/* DSM Stats \u2014 from GET /api/images/:imageId/dsm (stats field) */}
+                  {imageState === 'completed' && dsmData && (
                     <>
                       <div style={{ height: 1, background: '#191919', margin: '16px 0' }} />
                       <p className="font-mono text-[10px] uppercase tracking-[0.2em] mb-3" style={{ color: '#383838' }}>DSM Stats</p>
                       <div className="flex flex-col gap-0">
-                        <DataRow label="Min Z" value="2.1m" />
-                        <DataRow label="Max Z" value="48.7m" />
-                        <DataRow label="Mean Z" value="21.4m" />
-                        <DataRow label="Std Dev" value="6.8m" />
-                        <DataRow label="Resolution" value={(image?.resolution ?? 0.5) + 'm GSD'} />
-                        <DataRow label="Vertices" value="1,681" />
+                        <DataRow label="Min Z" value={(dsmData.stats?.minZ ?? dsmData.stats?.min_elevation ?? '—') + 'm'} />
+                        <DataRow label="Max Z" value={(dsmData.stats?.maxZ ?? dsmData.stats?.max_elevation ?? '—') + 'm'} />
+                        <DataRow label="Mean Z" value={(dsmData.stats?.meanZ ?? dsmData.stats?.mean_elevation ?? '—') + 'm'} />
+                        <DataRow label="Std Dev" value={(dsmData.stats?.stdDev ?? dsmData.stats?.std_dev ?? '—') + 'm'} />
+                        <DataRow label="Resolution" value={(dsmData.resolution ?? image?.resolution ?? '—') + ' GSD'} />
+                        <DataRow label="CRS" value={dsmData.crs ?? image?.crs ?? 'EPSG:4326'} />
+                        {/* Vertices from mesh data */}
+                        {meshData?.stats?.vertexCount && (
+                          <DataRow label="Vertices" value={Number(meshData.stats.vertexCount).toLocaleString()} />
+                        )}
+                        {meshData?.stats?.faceCount && (
+                          <DataRow label="Faces" value={Number(meshData.stats.faceCount).toLocaleString()} />
+                        )}
                       </div>
                     </>
                   )}
@@ -870,6 +1037,72 @@ export default function WorkspacePage() {
 
         </div>
       </div>
+
+      {/* ── Annotation modal — portal to document.body so it escapes the blurred workspace div ── */}
+      {selectedAnnotation && createPortal(
+        (() => {
+          const annText = selectedAnnotation.note || selectedAnnotation.notes || selectedAnnotation.text || selectedAnnotation.content || selectedAnnotation.label || ''
+          const annTs = selectedAnnotation.createdAt
+            ? new Date(selectedAnnotation.createdAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+            : ''
+          return (
+            <>
+              {/* Dark backdrop — click to close */}
+              <div
+                onClick={() => setSelectedAnnotation(null)}
+                style={{
+                  position: 'fixed', inset: 0, zIndex: 99998,
+                  background: 'rgba(0,0,0,0.55)',
+                  cursor: 'pointer',
+                }}
+              />
+              {/* Modal box */}
+              <div
+                role="dialog"
+                aria-modal="true"
+                onClick={(e) => e.stopPropagation()}
+                style={{
+                  position: 'fixed',
+                  top: '50%', left: '50%',
+                  transform: 'translate(-50%, -50%)',
+                  zIndex: 99999,
+                  width: 'min(520px, calc(100vw - 48px))',
+                  background: '#0e0e0e',
+                  border: '1px solid #2a2a2a',
+                  borderRadius: 20,
+                  padding: '32px 34px',
+                  boxShadow: '0 32px 80px rgba(0,0,0,0.95), 0 0 0 1px rgba(255,255,255,0.045)',
+                }}
+              >
+                <button
+                  onClick={() => setSelectedAnnotation(null)}
+                  aria-label="Close"
+                  style={{
+                    position: 'absolute', top: 18, right: 20,
+                    background: 'none', border: 'none',
+                    color: '#404040', cursor: 'pointer',
+                    fontSize: 18, lineHeight: 1, fontFamily: 'inherit',
+                    transition: 'color 0.15s',
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.color = '#e0e0e0' }}
+                  onMouseLeave={(e) => { e.currentTarget.style.color = '#404040' }}
+                >✕</button>
+                <div className="flex items-center gap-3 mb-6">
+                  <span style={{ fontSize: 16 }}>📝</span>
+                  <span className="font-mono text-[10px] uppercase tracking-[0.28em]" style={{ color: '#484848' }}>Annotation</span>
+                </div>
+                <p style={{ color: '#c0c0c0', fontSize: 14, lineHeight: 1.7, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'inherit' }}>
+                  {annText}
+                </p>
+                {annTs && (
+                  <p className="font-mono text-[10px] mt-6" style={{ color: '#2e2e2e' }}>{annTs}</p>
+                )}
+              </div>
+            </>
+          )
+        })(),
+        document.body
+      )}
     </>
   )
 }

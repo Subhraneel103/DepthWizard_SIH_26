@@ -4,6 +4,12 @@ import ApiResponse from "../utils/ApiResponse.js";
 import Image from "../models/Images.model.js"; // Ensure exact case matches disk
 import Job from "../models/Jobs.model.js";     // Ensure exact case matches disk
 
+import { Queue } from "bullmq";
+import crypto from "crypto";
+
+const connection = { host: "127.0.0.1", port: 6379 };
+const processQueue = new Queue("3d-processing", { connection });
+
 // GET /api/images/:imageId/metadata
 export const getImageMetadata = asyncHandler(async (req, res) => {
     const { imageId } = req.params;
@@ -122,13 +128,13 @@ export const processImage = asyncHandler(async (req, res) => {
     const image = await Image.findById(imageId);
     if (!image) throw new ApiError(404, "Image not found");
 
-    const randomSuffix = Math.floor(1000 + Math.random() * 9000);
+    const randomSuffix = crypto.randomBytes(2).toString('hex').toUpperCase();
     const jobHash = `#QM-${randomSuffix}`;
 
     const job = await Job.create({
         image: image._id,
         jobHash,
-        backbone: backbone || "vit-l",
+        backbone: backbone || "large",
         calibMethod: calibMethod || (image.gcps?.length ? "gcp" : "srtm"),
         status: "queued",
         stage: "preprocess",
@@ -136,38 +142,12 @@ export const processImage = asyncHandler(async (req, res) => {
         statusMessage: "Task enqueued for processing"
     });
 
-    setTimeout(async () => {
-        try {
-            await Job.findByIdAndUpdate(job._id, {
-                status: "active",
-                stage: "depth_inference",
-                progress: 35,
-                statusMessage: "Running Vision Transformer depth inference"
-            });
-
-            setTimeout(async () => {
-                await Job.findByIdAndUpdate(job._id, {
-                    stage: "mesh_generation",
-                    progress: 75,
-                    statusMessage: "Constructing 3D surface mesh and elevation matrix"
-                });
-
-                setTimeout(async () => {
-                    await Job.findByIdAndUpdate(job._id, {
-                        status: "completed",
-                        stage: "finalizing",
-                        progress: 100,
-                        statusMessage: "Terrain pipeline completed successfully"
-                    });
-                }, 3000);
-            }, 3000);
-        } catch (err) {
-            await Job.findByIdAndUpdate(job._id, {
-                status: "failed",
-                errorMessage: err.message
-            });
-        }
-    }, 1000);
+    // Send the task to Redis/BullMQ instead of using setTimeout
+    await processQueue.add("generate-mesh", {
+        jobId: job._id,
+        imageId: image._id,
+        storagePath: image.storagePath 
+    });
 
     return res.status(202).json(
         new ApiResponse(
@@ -213,19 +193,22 @@ export const getImageMesh = asyncHandler(async (req, res) => {
 // GET /api/images/:imageId/dsm
 export const getImageDSM = asyncHandler(async (req, res) => {
     const { imageId } = req.params;
-    const image = await Image.findById(imageId);
-    if (!image) throw new ApiError(404, "Image not found");
+    
+    // Find the actual result created by BullMQ/Python
+    const dsm = await DsmResult.findOne({ image: imageId }).sort({ createdAt: -1 });
 
     const dsmPayload = {
-        imageId: image._id,
-        crs: image.crs,
-        resolution: image.resolution,
+        _id: dsm?._id, // THIS UNLOCKS YOUR REACT VALIDATION BUTTON
+        imageId: imageId,
+        crs: "EPSG:4326",
+        resolution: 0.5,
         nodata: -9999,
         stats: { minZ: 2.1, maxZ: 48.7, meanZ: 21.4, stdDev: 6.8 },
-        rasterUrl: `/uploads/dsm-${image._id}.tif`,
+        rasterUrl: dsm ? dsm.storagePathGeotiff : `/uploads/dsm-${imageId}.tif`,
         dimensions: { width: 1024, height: 1024 }
     };
-    return res.status(200).json(new ApiResponse(200, dsmPayload, "DSM metadata retrieved successfully"));
+    
+    return res.status(200).json(new ApiResponse(200, dsmPayload, "DSM metadata retrieved"));
 });
 
 // POST /api/images/:imageId/measure
