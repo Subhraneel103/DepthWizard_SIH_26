@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { useParams, useNavigate } from 'react-router-dom'
 import { createPortal } from 'react-dom'
 import {
   SignInButton,
@@ -212,7 +213,8 @@ function CreateProjectModal({ onClose, onConfirm }) {
 }
 
 // ── Project Selector dropdown ─────────────────────────
-function ProjectSelector({ baseUrl, getToken }) {
+function ProjectSelector({ baseUrl, getToken, routeProjectId }) {
+  const navigate = useNavigate()
   const [projects, setProjects] = useState([])
   const [selectedProject, setSelectedProject] = useState(null)
   const [isDropdownOpen, setIsDropdownOpen] = useState(false)
@@ -235,8 +237,13 @@ function ProjectSelector({ baseUrl, getToken }) {
       const list = json.data || []
       
       setProjects(list)
-      // Use a callback here so we don't need selectedProject in the dependency array
-      setSelectedProject(prev => prev || (list.length > 0 ? list[0] : null))
+      // Sync with URL: if we have a routeProjectId, match it; otherwise fallback to first
+      setSelectedProject(() => {
+        if (routeProjectId) {
+          return list.find(p => (p._id ?? p.id) === routeProjectId) ?? list[0] ?? null
+        }
+        return list[0] ?? null
+      })
     } catch (err) {
       console.error('ProjectSelector: fetch error —', err)
     } finally {
@@ -245,6 +252,13 @@ function ProjectSelector({ baseUrl, getToken }) {
   }, [baseUrl, getToken])
 
   useEffect(() => { fetchProjects() }, [fetchProjects])
+
+  // ── Sync selectedProject when URL param changes ──────
+  useEffect(() => {
+    if (!routeProjectId || projects.length === 0) return
+    const match = projects.find(p => (p._id ?? p.id) === routeProjectId)
+    if (match) setSelectedProject(match)
+  }, [routeProjectId, projects])
 
   // ── Close on outside click ──────────────────────────
   useEffect(() => {
@@ -279,6 +293,8 @@ function ProjectSelector({ baseUrl, getToken }) {
     setProjects(prev => [...prev, newProject])
     setSelectedProject(newProject)
     setIsDropdownOpen(false)
+    // Navigate into the new project
+    navigate(`/projects/${newProject._id ?? newProject.id}`)
     // isModalOpen closed by modal itself after onConfirm resolves
   }, [baseUrl, getToken])
 
@@ -368,8 +384,8 @@ function ProjectSelector({ baseUrl, getToken }) {
                 const isSelected = selectedProject?.id === proj.id || selectedProject?._id === proj._id
                 return (
                   <button
-                    key={proj.id ?? proj._id ?? proj.name}
-                    onClick={() => { setSelectedProject(proj); setIsDropdownOpen(false) }}
+                    key={proj._id ?? proj.id ?? proj.name}
+                    onClick={() => { setSelectedProject(proj); setIsDropdownOpen(false); navigate(`/projects/${proj._id ?? proj.id}`) }}
                     className="w-full text-left flex items-center gap-2.5 px-3 py-2 transition-colors duration-100 cursor-pointer"
                     style={{
                       background: isSelected ? '#1a1a1a' : 'transparent',
@@ -434,6 +450,8 @@ function ProjectSelector({ baseUrl, getToken }) {
 export default function Navbar() {
   const { getToken, isSignedIn } = useAuth()
   const baseUrl = import.meta.env.VITE_API_BASE_URL
+  // Read the active project from the URL (undefined on non-project routes)
+  const { projectId: routeProjectId } = useParams()
 
   return (
     <header
@@ -460,7 +478,7 @@ export default function Navbar() {
 
           {/* Project Selector — authenticated users only */}
           <SignedIn>
-            <ProjectSelector baseUrl={baseUrl} getToken={getToken} />
+            <ProjectSelector baseUrl={baseUrl} getToken={getToken} routeProjectId={routeProjectId} />
           </SignedIn>
         </div>
 
