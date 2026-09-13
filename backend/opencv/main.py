@@ -104,7 +104,7 @@ async def load_model_on_startup():
 
 @app.post("/infer-depth")
 async def infer_depth(
-    image: UploadFile = File(...),
+    image: UploadFile = File(..., description="Input image (JPG, JPEG, PNG, TIF, TIFF)"),
     format: Literal["npy", "png"] = Query(
         "npy", description="npy = raw float32 array for calibration; png = normalized preview image"
     ),
@@ -158,7 +158,7 @@ async def infer_depth(
 @app.post("/generate-mesh")
 async def generate_mesh(
     elevation: UploadFile = File(..., description="The calibrated absolute-elevation .npy from Stage 3"),
-    texture: UploadFile = File(..., description="RGB texture image (typically the original photo)"),
+    texture: UploadFile = File(..., description="RGB texture image (JPG, JPEG, PNG, TIF, TIFF)"),
     pixel_size_x: float = Form(1.0, description="Real-world meters between adjacent grid columns"),
     pixel_size_z: float = Form(1.0, description="Real-world meters between adjacent grid rows"),
     z_exaggeration: float = Form(1.0, description="Multiply elevation for visual clarity; 1.0 = true scale"),
