@@ -225,22 +225,24 @@ function ProjectSelector({ baseUrl, getToken }) {
     try {
       setIsLoading(true)
       const token = await getToken();
-      console.log("My generated token is:", token);
       const res = await fetch(`${baseUrl}/projects`, {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (!res.ok) throw new Error('Failed to fetch projects')
-      const data = await res.json()
-      // Support both { projects: [] } and a bare array
-      const list = Array.isArray(data) ? data : (data.projects ?? [])
+      
+      const json = await res.json()
+      // Extract the array from the backend's ApiResponse wrapper
+      const list = json.data || []
+      
       setProjects(list)
-      if (list.length > 0 && !selectedProject) setSelectedProject(list[0])
+      // Use a callback here so we don't need selectedProject in the dependency array
+      setSelectedProject(prev => prev || (list.length > 0 ? list[0] : null))
     } catch (err) {
       console.error('ProjectSelector: fetch error —', err)
     } finally {
       setIsLoading(false)
     }
-  }, [baseUrl, getToken, selectedProject])
+  }, [baseUrl, getToken])
 
   useEffect(() => { fetchProjects() }, [fetchProjects])
 
@@ -270,8 +272,10 @@ function ProjectSelector({ baseUrl, getToken }) {
       const errBody = await res.json().catch(() => ({}))
       throw new Error(errBody.message ?? `Server error ${res.status}`)
     }
-    const created = await res.json()
-    const newProject = created.project ?? created
+    const json = await res.json()
+    // Extract the newly created project from the ApiResponse wrapper
+    const newProject = json.data
+    
     setProjects(prev => [...prev, newProject])
     setSelectedProject(newProject)
     setIsDropdownOpen(false)
@@ -361,7 +365,7 @@ function ProjectSelector({ baseUrl, getToken }) {
               </div>
             ) : (
               projects.map((proj) => {
-                const isSelected = selectedProject?.id === proj.id
+                const isSelected = selectedProject?.id === proj.id || selectedProject?._id === proj._id
                 return (
                   <button
                     key={proj.id ?? proj._id ?? proj.name}
