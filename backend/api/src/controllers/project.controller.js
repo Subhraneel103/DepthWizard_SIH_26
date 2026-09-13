@@ -76,6 +76,32 @@ export const getProjectById = asyncHandler(async (req, res) => {
         .json(new ApiResponse(200, responsePayload, "Project details fetched successfully"));
 });
 
+// @desc    Delete a project and all its images
+// @route   DELETE /api/projects/:projectId
+export const deleteProject = asyncHandler(async (req, res) => {
+    const { userId } = getAuth(req);
+    if (!userId) {
+        throw new ApiError(401, "Unauthorized: Authentication token is missing or invalid");
+    }
+
+    const { projectId } = req.params;
+
+    const project = await Project.findOne({ _id: projectId, userId });
+    if (!project) {
+        throw new ApiError(404, "Project not found or you do not have permission");
+    }
+
+    // Delete all images belonging to this project first
+    await Image.deleteMany({ project: projectId });
+
+    // Delete the project itself
+    await Project.findByIdAndDelete(projectId);
+
+    return res
+        .status(200)
+        .json(new ApiResponse(200, { projectId }, "Project deleted successfully"));
+});
+
 // @desc    Upload an image into a project
 // @route   POST /api/projects/:projectId/images
 export const uploadProjectImage = asyncHandler(async (req, res) => {

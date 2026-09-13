@@ -187,11 +187,15 @@ export default function ProjectDetailPage() {
       })
       if (!res.ok) throw new Error('Project not found')
       const json = await res.json()
-      const data = json.data ?? json
-      setProject(data)
-      // Images may be nested or on a separate field
-      const imgs = data.images ?? []
-      setImages(imgs)
+
+      // Backend returns: { data: { project: {...}, images: [...] } }
+      // (getProjectById wraps in responsePayload = { project, images })
+      const payload  = json.data ?? json
+      const projData = payload.project ?? payload   // unwrap nested project if present
+      const imgData  = payload.images  ?? projData.images ?? []
+
+      setProject(projData)
+      setImages(imgData)
     } catch (err) {
       console.error('ProjectDetail: fetch error —', err)
     } finally {
@@ -229,6 +233,8 @@ export default function ProjectDetailPage() {
         setPendingFiles(prev =>
           prev.map(p => p.file === file ? { ...p, status: 'done' } : p)
         )
+        // Signal hub page to refresh Jump Back In (CustomEvent works same-tab)
+        window.dispatchEvent(new CustomEvent('dw_activity'))
       } catch (err) {
         setPendingFiles(prev =>
           prev.map(p => p.file === file ? { ...p, status: 'error' } : p)
@@ -244,17 +250,27 @@ export default function ProjectDetailPage() {
   }, [baseUrl, getToken, projectId])
 
   // ── Delete project ────────────────────────────────
+  const projectName = project?.name ?? 'this project'
+
   const handleDelete = async () => {
-    if (!window.confirm(`Delete "${project?.name}"? This cannot be undone.`)) return
+    if (!window.confirm(`Delete "${projectName}"? This cannot be undone.`)) return
     try {
       const token = await getToken()
-      await fetch(`${baseUrl}/projects/${projectId}`, {
+      const res = await fetch(`${baseUrl}/projects/${projectId}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
       })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        alert(err.message ?? `Delete failed (${res.status})`)
+        return
+      }
+      // Signal hub page to refresh Jump Back In immediately
+      window.dispatchEvent(new CustomEvent('dw_activity'))
       navigate('/projects')
     } catch (err) {
       console.error('Delete error:', err)
+      alert('Network error — could not delete project.')
     }
   }
 
@@ -292,7 +308,7 @@ export default function ProjectDetailPage() {
           </Link>
           <span className="font-mono text-[13px] text-[#2e2e2e]">/</span>
           <span className="font-mono text-[13px] text-[#d4d4d4] font-semibold tracking-wide">
-            {project.name}
+            {project?.name ?? project?.projectName ?? project?.title ?? projectId}
           </span>
         </div>
 
@@ -307,7 +323,7 @@ export default function ProjectDetailPage() {
               <h1
                 className="font-mono text-[22px] uppercase tracking-[0.2em] text-white font-bold"
               >
-                {project.name}
+                {project?.name ?? project?.projectName ?? project?.title ?? projectId}
               </h1>
             </div>
             <p className="font-mono text-[13px] text-[#444444]">

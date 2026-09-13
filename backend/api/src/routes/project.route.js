@@ -3,6 +3,7 @@ import {
     createProject,
     getProjects,
     getProjectById,
+    deleteProject,
     uploadProjectImage,
     getProjectImages
 } from "../controllers/project.controller.js";
@@ -22,7 +23,8 @@ router
 // Single project route
 router
     .route("/:projectId")
-    .get(getProjectById);
+    .get(getProjectById)
+    .delete(deleteProject);
 
 // Raster / Satellite image upload route
 router
