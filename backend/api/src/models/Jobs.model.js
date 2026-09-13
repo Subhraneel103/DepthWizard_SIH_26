@@ -14,8 +14,8 @@ const jobSchema = new mongoose.Schema({
   },
   backbone: {
     type: String,
-    enum: ['vit-s', 'vit-b', 'vit-l'],
-    default: 'vit-l',
+    enum: ['small', 'base', 'large'],
+    default: 'large',
   },
   calibMethod: {
     type: String,
