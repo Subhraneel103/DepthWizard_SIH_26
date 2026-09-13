@@ -1,7 +1,7 @@
 import { useNavigate } from 'react-router-dom'
 import { SignUpButton, useAuth } from '@clerk/clerk-react'
 
-const NAVBAR_H = 108
+const NAVBAR_H = 72
 
 const stats = [
   { value: '< 30s',  label: 'Processing Time'   },

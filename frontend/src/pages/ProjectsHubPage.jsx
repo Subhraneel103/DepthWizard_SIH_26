@@ -4,14 +4,15 @@ import { useAuth } from '@clerk/clerk-react'
 import { createPortal } from 'react-dom'
 import HeroBackground from '../components/HeroBackground'
 
-const NAVBAR_H = 108
+const NAVBAR_H = 72
 
-// storagePath may be an absolute Windows path or 'uploads/file.ext'
-function buildImageUrl(storagePath, baseUrl) {
-  if (!storagePath) return null
-  if (storagePath.startsWith('http')) return storagePath
+// Build a proper display URL from previewPath or storagePath
+function buildImageUrl(pathStr, baseUrl) {
+  if (!pathStr) return null
+  if (pathStr.startsWith('http')) return pathStr
   const serverRoot = baseUrl.replace(/\/api\/?$/, '').replace(/\/$/, '')
-  const filename = storagePath.split(/[/\\]/).pop()
+  if (pathStr.startsWith('/uploads/')) return serverRoot + pathStr
+  const filename = pathStr.split(/[/\\]/).pop()
   return serverRoot + '/uploads/' + filename
 }
 
@@ -471,7 +472,8 @@ export default function ProjectsHubPage() {
             const imgs = payload.images || (payload.project && payload.project.images) || []
 
             imgs.forEach((img) => {
-              const url = buildImageUrl(img.storagePath, baseUrl)
+              // Prefer previewPath (JPEG) over raw storagePath (TIF)
+              const url = buildImageUrl(img.previewPath || img.storagePath, baseUrl)
               allUploads.push({
                 url,
                 filename: img.filename || null,
@@ -544,18 +546,18 @@ export default function ProjectsHubPage() {
         className="min-h-screen relative z-10"
         style={{ paddingTop: NAVBAR_H, background: 'transparent' }}
       >
-        <div style={{ maxWidth: 1500, margin: '0 auto', paddingLeft: 40, paddingRight: 40, paddingTop: 64, paddingBottom: 64 }}>
+        <div style={{ maxWidth: 1200, margin: '0 auto', paddingLeft: 24, paddingRight: 24, paddingTop: 36, paddingBottom: 36 }}>
 
           {/* Page header */}
           <div
-            className="flex items-center justify-between pt-6 pb-12 mb-16"
+            className="flex items-center justify-between pt-3 pb-6 mb-8"
             style={{ borderBottom: '1px solid #1c1c1c' }}
           >
             <div>
-              <h1 className="font-mono text-[32px] uppercase tracking-[0.22em] text-white font-semibold mb-3 leading-tight">
+              <h1 className="font-mono text-[22px] uppercase tracking-[0.22em] text-white font-semibold mb-2 leading-tight">
                 DepthWizard Hub
               </h1>
-              <p className="font-mono text-[13px] text-[#444444] tracking-wide">
+              <p className="font-mono text-[11px] text-[#444444] tracking-wide">
                 {isLoading
                   ? 'Loading\u2026'
                   : projects.length + ' project' + (projects.length !== 1 ? 's' : '')}
@@ -569,7 +571,7 @@ export default function ProjectsHubPage() {
                 background: 'transparent',
                 border: '1px solid #2a2a2a',
                 color: '#a1a1aa',
-                padding: '14px 28px',
+                padding: '9px 18px',
               }}
               onMouseEnter={(e) => {
                 e.currentTarget.style.borderColor = '#555555'
@@ -593,7 +595,7 @@ export default function ProjectsHubPage() {
             <>
               {/* Jump Back In — one slot per recently-uploaded image */}
               {recentUploads.length > 0 && (
-                <section className="mb-20">
+                <section className="mb-10">
                   <SectionLabel icon="&#9889;" text="Jump Back In" />
                   <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-5">
                     {recentUploads.map((img, idx) => (
@@ -613,11 +615,11 @@ export default function ProjectsHubPage() {
                 <SectionLabel icon="&#128193;" text={'All Projects (' + projects.length + ')'} />
                 {projects.length === 0 ? (
                   <div
-                    className="flex flex-col items-center justify-center py-28"
+                    className="flex flex-col items-center justify-center py-14"
                     style={{ border: '1px dashed #1c1c1c', borderRadius: 14 }}
                   >
                     <span className="text-[#2a2a2a] text-6xl mb-6">&#9672;</span>
-                    <p className="font-mono text-[14px] text-[#404040] mb-8 tracking-wide">
+                    <p className="font-mono text-[12px] text-[#404040] mb-6 tracking-wide">
                       No projects yet. Create your first one.
                     </p>
                     <button
@@ -625,7 +627,7 @@ export default function ProjectsHubPage() {
                       className="font-mono text-[13px] uppercase tracking-[0.2em] cursor-pointer"
                       style={{
                         background: '#e5e5e5', color: '#000',
-                        border: '1px solid #e5e5e5', padding: '13px 32px',
+                        border: '1px solid #e5e5e5', padding: '9px 22px',
                       }}
                     >
                       + Create Project

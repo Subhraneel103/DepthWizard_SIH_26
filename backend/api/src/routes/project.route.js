@@ -7,7 +7,7 @@ import {
     uploadProjectImage,
     getProjectImages
 } from "../controllers/project.controller.js";
-import { upload } from "../middlewares/upload.middleware.js";
+import { uploadImageHandler } from "../middlewares/upload.middleware.js";
 import { requireAuth } from "../middlewares/auth.middleware.js";
 
 const router = Router();
@@ -29,7 +29,7 @@ router
 // Raster / Satellite image upload route
 router
     .route("/:projectId/images")
-    .post(upload.single("image"), uploadProjectImage)
+    .post(uploadImageHandler, uploadProjectImage)
     .get(getProjectImages);
 
 export default router;

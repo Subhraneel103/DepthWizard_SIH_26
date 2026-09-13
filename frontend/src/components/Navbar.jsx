@@ -466,11 +466,11 @@ export default function Navbar() {
         borderBottom: '1px solid #1c1c1c',
         boxShadow: '0 1px 0 rgba(255,255,255,0.03)',
       }}
-      className="fixed top-0 left-0 right-0 z-50 h-[108px]"
+      className="fixed top-0 left-0 right-0 z-50 h-[72px]"
     >
       <div
         className="flex items-center justify-between h-full"
-        style={{ paddingLeft: '2.5rem', paddingRight: '2.5rem' }}
+        style={{ paddingLeft: '1.5rem', paddingRight: '1.5rem' }}
       >
 
         {/* ── Left: Logo + Project Selector ── */}
@@ -484,7 +484,7 @@ export default function Navbar() {
             <img
               src={fullLogo}
               alt="DepthWizard"
-              style={{ height: '84px', width: 'auto', objectFit: 'contain' }}
+              style={{ height: '52px', width: 'auto', objectFit: 'contain' }}
               draggable={false}
             />
           </button>

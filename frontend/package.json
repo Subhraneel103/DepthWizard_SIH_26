@@ -11,11 +11,15 @@
   },
   "dependencies": {
     "@clerk/clerk-react": "^5.61.9",
+    "@react-three/drei": "^10.7.8",
+    "@react-three/fiber": "^9.7.0",
     "@tailwindcss/vite": "^4.3.3",
+    "geotiff": "^3.0.5",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-router-dom": "^7.18.3",
-    "tailwindcss": "^4.3.3"
+    "tailwindcss": "^4.3.3",
+    "three": "^0.186.0"
   },
   "devDependencies": {
     "@types/react": "^19.2.18",

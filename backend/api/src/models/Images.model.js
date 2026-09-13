@@ -34,6 +34,7 @@ const imageSchema = new mongoose.Schema({
   },
   filename: { type: String, required: true },
   storagePath: { type: String, required: true },
+  previewPath: { type: String },
   isGeoreferenced: { type: Boolean, default: false },
   crs: { type: String, default: 'EPSG:4326' },
   bounds: {
@@ -50,8 +51,11 @@ const imageSchema = new mongoose.Schema({
   resolution: { type: Number, default: 0.5 }, // 0.5m GSD
   gcps: [gcpSubSchema],
   annotations: [annotationSubSchema],
+  eshUrl: { type: String },
+  dsmUrl: { type: String },
+  status: { type: String, enum: ['idle', 'processing', 'completed', 'failed'], default: 'idle' },
   uploadedAt: { type: Date, default: Date.now },
-});
+}, { timestamps: true });
 
 imageSchema.index({ bounds: '2dsphere' });
 

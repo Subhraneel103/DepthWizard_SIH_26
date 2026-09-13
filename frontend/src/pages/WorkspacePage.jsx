@@ -3,18 +3,22 @@ import { useParams, useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '@clerk/clerk-react'
 import { createPortal } from 'react-dom'
 import HeroBackground from '../components/HeroBackground'
+import { fromArrayBuffer } from 'geotiff'
 
-const NAVBAR_H = 108
+const NAVBAR_H = 72
 
 // ─────────────────────────────────────────────────────────────────────────────
 // API helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-function buildImageUrl(storagePath, baseUrl) {
-  if (!storagePath) return null
-  if (storagePath.startsWith('http')) return storagePath
+// Build a proper display URL from previewPath or storagePath
+// Handles: absolute URLs, /uploads/ web paths, and relative filesystem paths
+function buildImageUrl(pathStr, baseUrl) {
+  if (!pathStr) return null
+  if (pathStr.startsWith('http')) return pathStr
   const serverRoot = baseUrl.replace(/\/api\/?$/, '').replace(/\/$/, '')
-  const filename = storagePath.split(/[/\\]/).pop()
+  if (pathStr.startsWith('/uploads/')) return serverRoot + pathStr
+  const filename = pathStr.split(/[/\\]/).pop()
   return serverRoot + '/uploads/' + filename
 }
 
@@ -176,10 +180,280 @@ function ProgressBar({ pct, label }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Center Canvas
+// Turbo colormap — 32 control points interpolated at runtime
+// Gives beautiful blue→green→yellow→red elevation visualization
 // ─────────────────────────────────────────────────────────────────────────────
+const TURBO_SRGB = [
+  [0.18995,0.07176,0.23217],[0.24984,0.10760,0.33891],[0.31264,0.14676,0.44556],[0.37684,0.18985,0.55277],
+  [0.43040,0.23572,0.64625],[0.46818,0.28104,0.72007],[0.49073,0.32607,0.77957],[0.50311,0.37101,0.82248],
+  [0.50587,0.41578,0.85082],[0.49995,0.46051,0.86354],[0.48440,0.50520,0.85978],[0.45636,0.55027,0.83827],
+  [0.41317,0.59514,0.79905],[0.35788,0.63961,0.74485],[0.29477,0.68337,0.67575],[0.22826,0.72628,0.59575],
+  [0.16818,0.76813,0.50903],[0.12074,0.80870,0.43415],[0.09076,0.84780,0.36610],[0.09181,0.88603,0.29810],
+  [0.14325,0.91987,0.23925],[0.24309,0.94855,0.19142],[0.38209,0.97261,0.15502],[0.53667,0.99127,0.12970],
+  [0.68828,0.99910,0.12311],[0.81421,0.98867,0.15469],[0.90563,0.96013,0.21735],[0.96199,0.91332,0.29969],
+  [0.99055,0.84899,0.40266],[0.99810,0.77217,0.52007],[0.98877,0.68534,0.64311],[0.96351,0.59019,0.76688],
+]
+function turboColor(t) {
+  const n = TURBO_SRGB.length - 1
+  const idx = Math.min(Math.floor(t * n), n - 1)
+  const f   = t * n - idx
+  const c0  = TURBO_SRGB[idx]
+  const c1  = TURBO_SRGB[Math.min(idx + 1, n)]
+  return [
+    Math.round((c0[0] + f * (c1[0] - c0[0])) * 255),
+    Math.round((c0[1] + f * (c1[1] - c0[1])) * 255),
+    Math.round((c0[2] + f * (c1[2] - c0[2])) * 255),
+  ]
+}
 
-function GridCanvas({ imageUrl, imageState, job }) {
+// ─────────────────────────────────────────────────────────────────────────────
+// DsmHeatmapCanvas — fetches raw .tif, decodes with geotiff.js, renders Turbo
+// heatmap to an HTML5 canvas, supports mouse pan + wheel zoom.
+// ─────────────────────────────────────────────────────────────────────────────
+function DsmHeatmapCanvas({ rasterUrl, dsmData, getToken, serverRoot }) {
+  const canvasRef  = useRef(null)
+  const wrapRef    = useRef(null)
+  // pan/zoom state stored in a ref to avoid re-render on every frame
+  const viewRef    = useRef({ ox: 0, oy: 0, scale: 1 })
+  const dragRef    = useRef(null)
+  const rasterRef  = useRef(null)   // { w, h, minZ, maxZ }
+
+  const [status, setStatus] = useState('idle') // idle | loading | error | ready
+  const [errMsg, setErrMsg] = useState('')
+
+  // ── Draw the pre-rendered ImageData buffer onto the display canvas at current pan/zoom ──
+  const redraw = useCallback(() => {
+    const canvas  = canvasRef.current
+    const wrap    = wrapRef.current
+    const raster  = rasterRef.current
+    if (!canvas || !wrap || !raster) return
+    const { width: cw, height: ch } = wrap.getBoundingClientRect()
+    canvas.width  = cw
+    canvas.height = ch
+    const ctx = canvas.getContext('2d')
+    ctx.clearRect(0, 0, cw, ch)
+    const { ox, oy, scale } = viewRef.current
+    const dw = raster.w * scale
+    const dh = raster.h * scale
+    ctx.drawImage(raster.bmp, ox, oy, dw, dh)
+    // Elevation legend bar
+    const barW = 140, barH = 10, barX = 16, barY = ch - 34
+    const grad = ctx.createLinearGradient(barX, 0, barX + barW, 0)
+    for (let i = 0; i <= 10; i++) {
+      const t = i / 10
+      const [r, g, b] = turboColor(t)
+      grad.addColorStop(t, `rgb(${r},${g},${b})`)
+    }
+    ctx.fillStyle = grad
+    ctx.beginPath()
+    ctx.roundRect(barX, barY, barW, barH, 4)
+    ctx.fill()
+    ctx.fillStyle = 'rgba(0,0,0,0.55)'
+    ctx.beginPath()
+    ctx.roundRect(barX - 2, barY - 16, barW + 4, barH + 20, 5)
+    ctx.fill()
+    ctx.fillStyle = grad
+    ctx.beginPath()
+    ctx.roundRect(barX, barY, barW, barH, 4)
+    ctx.fill()
+    ctx.font = '9px monospace'
+    ctx.fillStyle = '#555'
+    ctx.fillText(raster.minZ.toFixed(1) + 'm', barX, barY - 3)
+    ctx.fillStyle = '#555'
+    ctx.textAlign = 'right'
+    ctx.fillText(raster.maxZ.toFixed(1) + 'm', barX + barW, barY - 3)
+    ctx.textAlign = 'left'
+  }, [])
+
+  // ── Fit the raster inside the container on first load ──
+  const fitToContainer = useCallback(() => {
+    const wrap   = wrapRef.current
+    const raster = rasterRef.current
+    if (!wrap || !raster) return
+    const { width: cw, height: ch } = wrap.getBoundingClientRect()
+    const scale = Math.min(cw / raster.w, ch / raster.h) * 0.9
+    viewRef.current = {
+      scale,
+      ox: (cw - raster.w * scale) / 2,
+      oy: (ch - raster.h * scale) / 2,
+    }
+  }, [])
+
+  // ── Fetch + decode GeoTIFF, build an ImageBitmap ──
+  useEffect(() => {
+    if (!rasterUrl) return
+    let cancelled = false
+    setStatus('loading')
+    ;(async () => {
+      try {
+        const token = await getToken()
+        // rasterUrl may be web-relative like /uploads/dsm_xxx.tif
+        const fullUrl = rasterUrl.startsWith('http') ? rasterUrl : serverRoot + rasterUrl
+        const res = await fetch(fullUrl, { headers: { Authorization: 'Bearer ' + token } })
+        if (!res.ok) throw new Error('HTTP ' + res.status)
+        const buf  = await res.arrayBuffer()
+        const tiff = await fromArrayBuffer(buf)
+        const img  = await tiff.getImage()
+        const [band] = await img.readRasters({ interleave: false })
+        const w = img.getWidth()
+        const h = img.getHeight()
+
+        // Use backend stats if available, otherwise scan the band
+        let minZ = dsmData?.stats?.minZ ?? dsmData?.minZ ?? Infinity
+        let maxZ = dsmData?.stats?.maxZ ?? dsmData?.maxZ ?? -Infinity
+        if (!isFinite(minZ) || !isFinite(maxZ)) {
+          for (let i = 0; i < band.length; i++) {
+            const v = band[i]
+            if (isFinite(v) && v > -9999) { minZ = Math.min(minZ, v); maxZ = Math.max(maxZ, v) }
+          }
+        }
+        const range = maxZ - minZ || 1
+
+        // Build RGBA pixel array
+        const rgba = new Uint8ClampedArray(w * h * 4)
+        for (let i = 0; i < band.length; i++) {
+          const v = band[i]
+          if (!isFinite(v) || v <= -9999) {
+            rgba[i*4] = rgba[i*4+1] = rgba[i*4+2] = 0; rgba[i*4+3] = 0
+            continue
+          }
+          const t = Math.max(0, Math.min(1, (v - minZ) / range))
+          const [r, g, b] = turboColor(t)
+          rgba[i*4] = r; rgba[i*4+1] = g; rgba[i*4+2] = b; rgba[i*4+3] = 220
+        }
+
+        // Paint to an offscreen canvas and convert to ImageBitmap
+        const offscreen = document.createElement('canvas')
+        offscreen.width = w; offscreen.height = h
+        offscreen.getContext('2d').putImageData(new ImageData(rgba, w, h), 0, 0)
+        const bmp = await createImageBitmap(offscreen)
+
+        if (!cancelled) {
+          rasterRef.current = { w, h, bmp, minZ, maxZ }
+          fitToContainer()
+          redraw()
+          setStatus('ready')
+        }
+      } catch (e) {
+        if (!cancelled) { setStatus('error'); setErrMsg(e.message) }
+      }
+    })()
+    return () => { cancelled = true }
+  }, [rasterUrl, dsmData, getToken, serverRoot, fitToContainer, redraw])
+
+  // ── Re-draw on window resize ──
+  useEffect(() => {
+    const onResize = () => { fitToContainer(); redraw() }
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [fitToContainer, redraw])
+
+  // ── Pan (mouse drag) ──
+  const onMouseDown = (e) => {
+    dragRef.current = { startX: e.clientX - viewRef.current.ox, startY: e.clientY - viewRef.current.oy }
+  }
+  const onMouseMove = (e) => {
+    if (!dragRef.current) return
+    viewRef.current.ox = e.clientX - dragRef.current.startX
+    viewRef.current.oy = e.clientY - dragRef.current.startY
+    redraw()
+  }
+  const onMouseUp   = () => { dragRef.current = null }
+  const onMouseLeave = () => { dragRef.current = null }
+
+  // ── Zoom (wheel) ──
+  const onWheel = (e) => {
+    e.preventDefault()
+    const factor = e.deltaY < 0 ? 1.12 : 0.89
+    const rect   = canvasRef.current?.getBoundingClientRect()
+    if (!rect) return
+    const mx = e.clientX - rect.left
+    const my = e.clientY - rect.top
+    viewRef.current.ox = mx + (viewRef.current.ox - mx) * factor
+    viewRef.current.oy = my + (viewRef.current.oy - my) * factor
+    viewRef.current.scale *= factor
+    redraw()
+  }
+
+  return (
+    <div
+      ref={wrapRef}
+      className="absolute inset-0 z-10"
+      style={{ cursor: dragRef.current ? 'grabbing' : 'crosshair' }}
+      onMouseDown={onMouseDown}
+      onMouseMove={onMouseMove}
+      onMouseUp={onMouseUp}
+      onMouseLeave={onMouseLeave}
+    >
+      <canvas
+        ref={canvasRef}
+        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}
+        onWheel={onWheel}
+      />
+
+      {/* Loading overlay */}
+      {status === 'loading' && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 select-none" style={{ pointerEvents: 'none', zIndex: 20 }}>
+          <div style={{ width: 36, height: 36, border: '2px solid #1e1e1e', borderTopColor: '#4a8a6a', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+          <span className="font-mono text-[10px] uppercase tracking-[0.22em]" style={{ color: '#404040' }}>Decoding raster…</span>
+        </div>
+      )}
+
+      {/* Error overlay */}
+      {status === 'error' && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 select-none" style={{ pointerEvents: 'none', zIndex: 20 }}>
+          <span className="font-mono text-[11px] uppercase tracking-[0.18em]" style={{ color: '#6a2a2a' }}>⚠ Failed to load DSM</span>
+          <span className="font-mono text-[9px]" style={{ color: '#3a1a1a' }}>{errMsg}</span>
+        </div>
+      )}
+
+      {/* No rasterUrl — DSM not generated yet */}
+      {!rasterUrl && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 select-none" style={{ pointerEvents: 'none', zIndex: 20 }}>
+          <span className="font-mono text-[11px] uppercase tracking-[0.18em]" style={{ color: '#303030' }}>DSM raster not available</span>
+          <span className="font-mono text-[9px]" style={{ color: '#222' }}>Generate the 3D model first</span>
+        </div>
+      )}
+
+      {/* Title badge — top right */}
+      {status === 'ready' && (
+        <div
+          className="absolute font-mono text-[9px] uppercase tracking-[0.2em] px-2.5 py-1.5 select-none"
+          style={{
+            top: 14, right: 14, zIndex: 21, pointerEvents: 'none',
+            border: '1px solid #1e3a2a', borderRadius: 7,
+            background: 'rgba(8,20,14,0.75)', backdropFilter: 'blur(8px)',
+            color: '#4a8a5a',
+          }}
+        >
+          ● DSM Heatmap — Turbo
+        </div>
+      )}
+
+      {/* Reset zoom hint — bottom right */}
+      {status === 'ready' && (
+        <button
+          onClick={() => { fitToContainer(); redraw() }}
+          className="absolute font-mono text-[9px] uppercase tracking-[0.16em] px-2 py-1 select-none"
+          style={{
+            bottom: 14, right: 14, zIndex: 21,
+            border: '1px solid #1e1e1e', borderRadius: 6,
+            background: 'rgba(8,8,8,0.7)', backdropFilter: 'blur(6px)',
+            color: '#383838', cursor: 'pointer', fontFamily: 'inherit',
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.borderColor = '#2e2e2e'; e.currentTarget.style.color = '#686868' }}
+          onMouseLeave={(e) => { e.currentTarget.style.borderColor = '#1e1e1e'; e.currentTarget.style.color = '#383838' }}
+        >
+          ⊡ Fit
+        </button>
+      )}
+    </div>
+  )
+}
+
+function GridCanvas({ imageUrl, imageState, job, activeLayer, dsmData, getToken, serverRoot }) {
+  // Derive the raster URL from DSM data (relative path like /uploads/dsm_xxx.tif)
+  const rasterUrl = dsmData?.rasterUrl || dsmData?.storagePathGeotiff || null
   return (
     <GlowCard style={{ width: '100%', height: '100%', borderRadius: 20,
       backgroundImage: 'linear-gradient(rgba(255,255,255,0.022) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.022) 1px, transparent 1px)',
@@ -191,8 +465,18 @@ function GridCanvas({ imageUrl, imageState, job }) {
         zIndex: 3, borderRadius: 20,
       }} />
 
-      {/* ── IDLE state ── */}
-      {imageState === 'idle' && (
+      {/* ── DSM HEATMAP layer ── */}
+      {activeLayer === 'dsm' && (
+        <DsmHeatmapCanvas
+          rasterUrl={rasterUrl}
+          dsmData={dsmData}
+          getToken={getToken}
+          serverRoot={serverRoot}
+        />
+      )}
+
+      {/* ── RAW 2D / COMPLETED MESH image (shown when not in DSM mode) ── */}
+      {activeLayer !== 'dsm' && imageState === 'idle' && (
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-6">
           {imageUrl ? (
             <div className="relative" style={{ maxWidth: '65%' }}>
@@ -217,8 +501,7 @@ function GridCanvas({ imageUrl, imageState, job }) {
         </div>
       )}
 
-      {/* ── PROCESSING state ── */}
-      {imageState === 'processing' && (
+      {activeLayer !== 'dsm' && imageState === 'processing' && (
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-8 select-none">
           <div className="flex flex-col items-center gap-5">
             <span className="text-5xl" style={{ animation: 'spin 3s linear infinite', display: 'inline-block' }}>⚙️</span>
@@ -238,8 +521,7 @@ function GridCanvas({ imageUrl, imageState, job }) {
         </div>
       )}
 
-      {/* ── COMPLETED state ── */}
-      {imageState === 'completed' && (
+      {activeLayer !== 'dsm' && imageState === 'completed' && (
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-5 select-none">
           {imageUrl ? (
             <div className="relative" style={{ maxWidth: '65%' }}>
@@ -348,9 +630,11 @@ export default function WorkspacePage() {
       setImage(imgData)
 
       // GET /api/projects/:projectId
+      // Response shape: { project: {...}, images: [...] } (wrapped in ApiResponse.data)
       try {
         const projData = await apiFetch(baseUrl + '/projects/' + projectId, token)
-        setProject(projData)
+        // projData.project is the actual Project document; projData itself may also be the doc
+        setProject(projData?.project || projData)
       } catch {}
 
       // GET /api/images/:imageId/mesh — stats: vertexCount, faceCount, minElevation, maxElevation
@@ -429,10 +713,12 @@ export default function WorkspacePage() {
       setJob(jData)
       if (jData.status === 'completed' || jData.status === 'failed') {
         clearInterval(pollRef.current); pollRef.current = null
+        
+        // ADD THIS LINE: Re-fetch data from the backend to get the new dsmResultId
+        if (jData.status === 'completed') load(); 
       }
     } catch {}
-  }, [baseUrl, getToken])
-
+  }, [baseUrl, getToken, load]) // Don't forget to add 'load' to this dependency array!
   // ── POST /api/images/:imageId/process ──
   const handleGenerate = useCallback(async () => {
     try {
@@ -583,9 +869,15 @@ export default function WorkspacePage() {
   }, [baseUrl, imageId, getToken])
 
   // ── Derived ──
-  const imageUrl    = image ? buildImageUrl(image.storagePath, baseUrl) : null
+  // previewPath is the JPEG preview generated by sharp on upload.
+  // The metadata endpoint already returns previewPath as storagePath,
+  // but we also check image.previewPath directly as an explicit fallback.
+  const imageUrl = image
+    ? buildImageUrl(image.previewPath || image.storagePath, baseUrl)
+    : null
   const filename    = image?.filename || imageId
-  const projectName = project?.name || project?.projectName || projectId
+  // project.name is the canonical field (Projects.model.js line 9)
+  const projectName = project?.name || project?.project?.name || project?.projectName || projectId
 
   // ─────────────────────────────────────────
   // Loading / Error states
@@ -636,92 +928,97 @@ export default function WorkspacePage() {
         willChange: 'filter',
       }}>
 
-        {/* ══════════════════════════════════════════
-            TOP TOOLBAR — breadcrumb + actions
-        ══════════════════════════════════════════ */}
-        <GlowCard style={{ borderRadius: 16, flexShrink: 0, padding: '0 22px' }}>
-          <div className="flex items-center justify-between" style={{ height: 56 }}>
+        {/* ══ BREADCRUMB BAR — matches ProjectDetailPage style ══ */}
+        <div className="flex items-center justify-between flex-shrink-0" style={{ paddingLeft: 4, paddingRight: 2 }}>
 
-            {/* Breadcrumb: Home / Projects / ProjectName / ImageName */}
-            <nav className="flex items-center gap-2" aria-label="Breadcrumb">
-              {[
-                { label: 'Home',    to: '/' },
-                { label: 'Projects', to: '/projects' },
-                { label: projectName, to: '/projects/' + projectId },
-              ].map(({ label, to }, i) => (
-                <span key={i} className="flex items-center gap-2">
-                  <Link to={to} className="font-mono text-[12px] transition-colors duration-150"
-                    style={{ color: '#424242', textDecoration: 'none' }}
-                    onMouseEnter={(e) => { e.currentTarget.style.color = '#909090' }}
-                    onMouseLeave={(e) => { e.currentTarget.style.color = '#424242' }}>
-                    {label}
-                  </Link>
-                  <span className="font-mono text-[12px]" style={{ color: '#262626' }}>/</span>
-                </span>
-              ))}
-              <span className="font-mono text-[12px] truncate" style={{ color: '#787878', maxWidth: 240 }}>{filename}</span>
-            </nav>
+          {/* Breadcrumb: Home / Projects / ProjectName / filename */}
+          <div className="flex items-center gap-2.5">
+            <Link
+              to="/"
+              className="font-mono text-[12px] transition-colors"
+              style={{ color: '#404040', textDecoration: 'none' }}
+              onMouseEnter={(e) => { e.currentTarget.style.color = '#888888' }}
+              onMouseLeave={(e) => { e.currentTarget.style.color = '#404040' }}
+            >Home</Link>
+            <span className="font-mono text-[12px]" style={{ color: '#2a2a2a' }}>/</span>
+            <Link
+              to="/projects"
+              className="font-mono text-[12px] transition-colors"
+              style={{ color: '#404040', textDecoration: 'none' }}
+              onMouseEnter={(e) => { e.currentTarget.style.color = '#888888' }}
+              onMouseLeave={(e) => { e.currentTarget.style.color = '#404040' }}
+            >Projects</Link>
+            <span className="font-mono text-[12px]" style={{ color: '#2a2a2a' }}>/</span>
+            <Link
+              to={'/projects/' + projectId}
+              className="font-mono text-[12px] transition-colors"
+              style={{ color: '#404040', textDecoration: 'none' }}
+              onMouseEnter={(e) => { e.currentTarget.style.color = '#888888' }}
+              onMouseLeave={(e) => { e.currentTarget.style.color = '#404040' }}
+            >{projectName}</Link>
+            <span className="font-mono text-[12px]" style={{ color: '#2a2a2a' }}>/</span>
+            <span className="font-mono text-[12px] font-semibold truncate" style={{ color: '#d4d4d4', maxWidth: 260 }}>{filename}</span>
+          </div>
 
-            {/* Actions */}
-            <div className="flex items-center gap-3">
-              {/* Share Link */}
-              <button onClick={handleShare} disabled={isSharing}
-                className="font-mono text-[11px] uppercase tracking-[0.16em] flex items-center gap-2 px-4 py-2 transition-all duration-150"
-                style={{
-                  background: shareUrl ? 'rgba(40,60,40,0.45)' : 'transparent',
-                  border: '1px solid', borderColor: shareUrl ? '#2a4a2a' : '#272727',
-                  color: shareUrl ? '#4a8a4a' : '#686868',
-                  cursor: isSharing ? 'wait' : 'pointer', borderRadius: 9, fontFamily: 'inherit',
-                }}
-                onMouseEnter={(e) => { if (!isSharing) { e.currentTarget.style.borderColor = '#484848'; e.currentTarget.style.color = '#b0b0b0' } }}
-                onMouseLeave={(e) => { e.currentTarget.style.borderColor = shareUrl ? '#2a4a2a' : '#272727'; e.currentTarget.style.color = shareUrl ? '#4a8a4a' : '#686868' }}>
-                <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
-                  <path d="M9 1.5L12 4.5 9 7.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
-                  <path d="M12 4.5H5.5C3.567 4.5 2 6.067 2 8v1" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+          {/* Actions — Share + Export */}
+          <div className="flex items-center gap-3">
+            {/* Share Link */}
+            <button onClick={handleShare} disabled={isSharing}
+              className="font-mono text-[11px] uppercase tracking-[0.14em] flex items-center gap-1.5 px-3 py-1.5 transition-all duration-150"
+              style={{
+                background: shareUrl ? 'rgba(40,60,40,0.35)' : 'transparent',
+                border: '1px solid', borderColor: shareUrl ? '#2a4a2a' : '#272727',
+                color: shareUrl ? '#4a8a4a' : '#555',
+                cursor: isSharing ? 'wait' : 'pointer', borderRadius: 7, fontFamily: 'inherit',
+              }}
+              onMouseEnter={(e) => { if (!isSharing) { e.currentTarget.style.borderColor = '#484848'; e.currentTarget.style.color = '#909090' } }}
+              onMouseLeave={(e) => { e.currentTarget.style.borderColor = shareUrl ? '#2a4a2a' : '#272727'; e.currentTarget.style.color = shareUrl ? '#4a8a4a' : '#555' }}>
+              <svg width="10" height="10" viewBox="0 0 12 12" fill="none">
+                <path d="M9 1.5L12 4.5 9 7.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+                <path d="M12 4.5H5.5C3.567 4.5 2 6.067 2 8v1" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+              </svg>
+              {isSharing ? 'Copying…' : shareUrl ? 'Copied!' : 'Share'}
+            </button>
+
+            {/* Export dropdown */}
+            <div className="relative" ref={exportRef}>
+              <button onClick={() => setShowExportMenu(v => !v)}
+                className="font-mono text-[11px] uppercase tracking-[0.14em] flex items-center gap-1.5 px-3 py-1.5 transition-all duration-150"
+                style={{ background: 'transparent', border: '1px solid #272727', color: '#555', cursor: 'pointer', borderRadius: 7, fontFamily: 'inherit' }}
+                onMouseEnter={(e) => { e.currentTarget.style.borderColor = '#404040'; e.currentTarget.style.color = '#909090' }}
+                onMouseLeave={(e) => { e.currentTarget.style.borderColor = '#272727'; e.currentTarget.style.color = '#555' }}>
+                <svg width="10" height="10" viewBox="0 0 12 12" fill="none">
+                  <path d="M6 1v7M3 6l3 3 3-3M2 10h8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
-                {isSharing ? 'Copying…' : shareUrl ? 'Copied!' : 'Share Link'}
+                Export ▾
               </button>
-
-              {/* Export dropdown */}
-              <div className="relative" ref={exportRef}>
-                <button onClick={() => setShowExportMenu(v => !v)}
-                  className="font-mono text-[11px] uppercase tracking-[0.16em] flex items-center gap-2 px-4 py-2 transition-all duration-150"
-                  style={{ background: '#0e0e0e', border: '1px solid #272727', color: '#a1a1aa', cursor: 'pointer', borderRadius: 9, fontFamily: 'inherit' }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = '#161616'; e.currentTarget.style.borderColor = '#404040' }}
-                  onMouseLeave={(e) => { e.currentTarget.style.background = '#0e0e0e'; e.currentTarget.style.borderColor = '#272727' }}>
-                  <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
-                    <path d="M6 1v7M3 6l3 3 3-3M2 10h8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                  Export ▾
-                </button>
-                {showExportMenu && (
-                  <div className="absolute right-0 flex flex-col" style={{
-                    top: 'calc(100% + 8px)', minWidth: 210,
-                    background: 'rgba(8,8,8,0.97)', backdropFilter: 'blur(12px)',
-                    border: '1px solid #242424', borderRadius: 12,
-                    boxShadow: '0 12px 36px rgba(0,0,0,0.8)', zIndex: 999,
-                  }}>
-                    <button onClick={handleExportDownload}
-                      className="font-mono text-[11px] text-left px-4 py-3 w-full transition-colors duration-100"
-                      style={{ background: 'none', border: 'none', color: '#686868', cursor: 'pointer', fontFamily: 'inherit' }}
-                      onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.04)'; e.currentTarget.style.color = '#b0b0b0' }}
-                      onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = '#686868' }}>
-                      ↓ Download GeoJSON
-                    </button>
-                    <div style={{ height: 1, background: '#1a1a1a', margin: '0 12px' }} />
-                    <button onClick={handleExportPackage}
-                      className="font-mono text-[11px] text-left px-4 py-3 w-full transition-colors duration-100"
-                      style={{ background: 'none', border: 'none', color: '#686868', cursor: 'pointer', fontFamily: 'inherit' }}
-                      onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.04)'; e.currentTarget.style.color = '#b0b0b0' }}
-                      onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = '#686868' }}>
-                      📦 Export Full Package
-                    </button>
-                  </div>
-                )}
-              </div>
+              {showExportMenu && (
+                <div className="absolute right-0 flex flex-col" style={{
+                  top: 'calc(100% + 6px)', minWidth: 200,
+                  background: 'rgba(8,8,8,0.97)', backdropFilter: 'blur(12px)',
+                  border: '1px solid #242424', borderRadius: 10,
+                  boxShadow: '0 12px 36px rgba(0,0,0,0.8)', zIndex: 999,
+                }}>
+                  <button onClick={handleExportDownload}
+                    className="font-mono text-[11px] text-left px-4 py-3 w-full transition-colors duration-100"
+                    style={{ background: 'none', border: 'none', color: '#686868', cursor: 'pointer', fontFamily: 'inherit' }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.04)'; e.currentTarget.style.color = '#b0b0b0' }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = '#686868' }}>
+                    ↓ Download GeoJSON
+                  </button>
+                  <div style={{ height: 1, background: '#1a1a1a', margin: '0 12px' }} />
+                  <button onClick={handleExportPackage}
+                    className="font-mono text-[11px] text-left px-4 py-3 w-full transition-colors duration-100"
+                    style={{ background: 'none', border: 'none', color: '#686868', cursor: 'pointer', fontFamily: 'inherit' }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.04)'; e.currentTarget.style.color = '#b0b0b0' }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = '#686868' }}>
+                    📦 Export Full Package
+                  </button>
+                </div>
+              )}
             </div>
           </div>
-        </GlowCard>
+        </div>
 
         {/* ══════════════════════════════════════════
             3-PANEL WORKSPACE
@@ -889,7 +1186,15 @@ export default function WorkspacePage() {
 
           {/* ══ CENTER CANVAS ══ */}
           <div className="flex-1 min-h-0 min-w-0">
-            <GridCanvas imageUrl={imageUrl} imageState={imageState} job={job} />
+            <GridCanvas
+              imageUrl={imageUrl}
+              imageState={imageState}
+              job={job}
+              activeLayer={activeLayer}
+              dsmData={dsmData}
+              getToken={getToken}
+              serverRoot={baseUrl.replace(/\/api\/?$/, '').replace(/\/$/, '')}
+            />
           </div>
 
           {/* ══ RIGHT PANEL — Tools ══ */}

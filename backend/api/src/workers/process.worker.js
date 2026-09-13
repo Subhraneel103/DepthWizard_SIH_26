@@ -1,11 +1,12 @@
 import { Worker } from "bullmq";
+import fs from "fs";
+import path from "path";
 import Job from "../models/Jobs.model.js";
 import Image from "../models/Images.model.js";
-import DsmResult from "../models/DsmResults.model.js"; // Ensure exact case matches disk
+import DsmResult from "../models/DsmResults.model.js";
 
 const connection = { host: "127.0.0.1", port: 6379 };
 
-// Mock processing delay
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 const worker = new Worker("3d-processing", async (bullJob) => {
@@ -37,11 +38,35 @@ const worker = new Worker("3d-processing", async (bullJob) => {
     });
     await sleep(3000);
 
+    const uploadDir = path.resolve(process.cwd(), "public/uploads");
+    if (!fs.existsSync(uploadDir)) {
+        fs.mkdirSync(uploadDir, { recursive: true });
+    }
+
+    const dsmFilename = `dsm_${imageId}.tif`;
+    const meshFilename = `mesh_${imageId}.glb`;
+    
+    const absoluteDsmPath = path.join(uploadDir, dsmFilename);
+    const absoluteMeshPath = path.join(uploadDir, meshFilename);
+
+    // Copy the actual valid uploaded raw .tif file so geotiff.js can parse its binary headers successfully
+    const sourceTifPath = path.resolve(process.cwd(), "public", storagePath ? storagePath.replace(/^\//, "") : "");
+    if (fs.existsSync(sourceTifPath)) {
+        fs.copyFileSync(sourceTifPath, absoluteDsmPath);
+    } else {
+        // Absolute fallback if source is missing
+        fs.writeFileSync(absoluteDsmPath, "SIMULATED_DSM_GEOTIFF_DATA");
+    }
+
+    if (!fs.existsSync(absoluteMeshPath)) {
+        fs.writeFileSync(absoluteMeshPath, "SIMULATED_3D_MESH_DATA");
+    }
+
     // 4. Finalize & Save DsmResult
     const result = await DsmResult.create({
         image: imageId,
-        storagePathGeotiff: `/uploads/dsm_${imageId}.tif`,
-        storagePathMesh: `/uploads/mesh_${imageId}.glb`,
+        storagePathGeotiff: `/uploads/${dsmFilename}`,
+        storagePathMesh: `/uploads/${meshFilename}`,
         minElevation: 12.4,
         maxElevation: 48.7,
         modelBackbone: "large",

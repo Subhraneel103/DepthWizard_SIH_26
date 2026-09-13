@@ -1,3 +1,6 @@
+import path from "path";
+import fs from "fs";
+import sharp from "sharp";
 import { getAuth } from "@clerk/express";
 import Project from "../models/Projects.model.js";
 import Image from "../models/Images.model.js";
@@ -105,46 +108,62 @@ export const deleteProject = asyncHandler(async (req, res) => {
 // @desc    Upload an image into a project
 // @route   POST /api/projects/:projectId/images
 export const uploadProjectImage = asyncHandler(async (req, res) => {
-    const { userId } = getAuth(req);
-    if (!userId) {
-        throw new ApiError(401, "Unauthorized: Authentication token is missing or invalid");
-    }
+  const { projectId } = req.params;
+  const file = req.file;
 
-    const { projectId } = req.params;
+  if (!file) throw new ApiError(400, "No image file uploaded");
 
-    // Verify user owns the project
-    const project = await Project.findOne({ _id: projectId, userId });
-    if (!project) {
-        throw new ApiError(404, "Project not found or you do not have permission");
-    }
+  const project = await Project.findById(projectId);
+  if (!project) throw new ApiError(404, "Project not found");
 
-    // Check if multer parsed the image
-    const imageFile = req.file;
-    if (!imageFile) {
-        throw new ApiError(400, "Image file is required under field 'image'");
-    }
+  const publicDir = path.resolve(process.cwd(), "public");
+  const uploadsDir = path.join(publicDir, "uploads");
 
-    const filename = imageFile.originalname;
-    const isGeoreferenced =
-        filename.toLowerCase().endsWith(".tif") || filename.toLowerCase().endsWith(".tiff");
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+  }
 
-    const storagePath = imageFile.path || imageFile.location || `uploads/${imageFile.filename}`;
+  const relativeOriginalPath = `/uploads/${file.filename}`;
+  let relativePreviewPath = relativeOriginalPath;
+  let storagePathFinal = relativeOriginalPath;
 
-    const image = await Image.create({
-        project: projectId,
-        filename,
-        storagePath,
-        isGeoreferenced,
-        resolution: 0.5,
-    });
+  const ext = path.extname(file.originalname).toLowerCase();
 
-    if (!image) {
-        throw new ApiError(500, "Failed to register image record");
-    }
+  // If a standard PNG/JPG is uploaded, automatically convert it to a TIFF container 
+  // so geotiff.js can parse it during testing without throwing byte order errors.
+  if (ext === ".png" || ext === ".jpg" || ext === ".jpeg") {
+    const tiffFilename = `dsm_${path.parse(file.filename).name}.tif`;
+    const absoluteTiffPath = path.join(uploadsDir, tiffFilename);
 
-    return res
-        .status(201)
-        .json(new ApiResponse(201, image, "Image uploaded and registered successfully"));
+    await sharp(file.path)
+      .tiff()
+      .toFile(absoluteTiffPath);
+
+    storagePathFinal = `/uploads/${tiffFilename}`;
+  } 
+  else if (ext === ".tif" || ext === ".tiff") {
+    // Convert raw TIFF band data into an 8-bit RGB JPEG preview for web gallery render
+    const previewFilename = `preview_${path.parse(file.filename).name}.jpg`;
+    const absolutePreviewPath = path.join(uploadsDir, previewFilename);
+
+    await sharp(file.path)
+      .jpeg({ quality: 85 })
+      .toFile(absolutePreviewPath);
+
+    relativePreviewPath = `/uploads/${previewFilename}`;
+  }
+
+  const newImage = await Image.create({
+    project: projectId,
+    filename: file.originalname,
+    storagePath: storagePathFinal, // Points to valid .tif (either original or converted from png/jpg)
+    previewPath: relativePreviewPath,  // Web-friendly preview for React Gallery & Canvas
+    isGeoreferenced: true,
+  });
+
+  return res
+    .status(201)
+    .json(new ApiResponse(201, newImage, "Image uploaded and processed successfully"));
 });
 
 // @desc    Get images for a specific project

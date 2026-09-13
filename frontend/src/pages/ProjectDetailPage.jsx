@@ -3,14 +3,21 @@ import { useParams, useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '@clerk/clerk-react'
 import HeroBackground from '../components/HeroBackground'
 
-const NAVBAR_H = 108
+const NAVBAR_H = 72
 
-// Build a proper URL from storagePath (same logic as hub page)
-function buildImageUrl(storagePath, baseUrl) {
-  if (!storagePath) return null
-  if (storagePath.startsWith('http')) return storagePath
+// Build a proper display URL from storagePath or previewPath
+// previewPath/storagePath may be:
+//   - Already absolute: "http://..."  → return as-is
+//   - Web-relative:     "/uploads/preview_xxx.jpg"  → prepend server root
+//   - Relative path:    "public/uploads/xxx.jpg"   → extract filename, prepend server root
+function buildImageUrl(pathStr, baseUrl) {
+  if (!pathStr) return null
+  if (pathStr.startsWith('http')) return pathStr
   const serverRoot = baseUrl.replace(/\/api\/?$/, '').replace(/\/$/, '')
-  const filename = storagePath.split(/[/\\]/).pop()
+  // Already a web path starting with /uploads/
+  if (pathStr.startsWith('/uploads/')) return serverRoot + pathStr
+  // Relative filesystem path — extract just the filename
+  const filename = pathStr.split(/[/\\]/).pop()
   return serverRoot + '/uploads/' + filename
 }
 
@@ -104,21 +111,18 @@ function ImageCard({ image, projectId, navigate, baseUrl }) {
       })
     : null
 
-  // Build the actual display URL from storagePath
-  const imageUrl = buildImageUrl(image.storagePath, baseUrl) || image.thumbnailUrl || image.url || null
+  // Prefer previewPath (JPEG rendered by sharp on upload) over raw storagePath.
+  // Both are web-relative paths like /uploads/preview_xxx.jpg or /uploads/xxx.tif.
+  const imageUrl = buildImageUrl(image.previewPath || image.storagePath, baseUrl)
+    || image.thumbnailUrl || image.url || null
   const [imgError, setImgError] = useState(false)
-
-  // Detect if it's a .tif file — browsers can't natively render TIF,
-  // so we'll still try the URL (backend may serve a converted JPEG preview)
-  // but show a geo-raster icon if it fails
-  const isTif = filename.toLowerCase().endsWith('.tif')
 
   return (
     <GlowCard
       onClick={() => navigate('/projects/' + projectId + '/workspace/' + (image._id || image.id))}
       style={{ padding: 0, display: 'flex', flexDirection: 'column' }}
     >
-      {/* Thumbnail */}
+      {/* Thumbnail — always rendered via <img>; previewPath is a browser-safe JPEG */}
       <div
         className="w-full relative flex items-center justify-center overflow-hidden"
         style={{ height: 190, background: '#080808', borderRadius: '12px 12px 0 0' }}
@@ -131,28 +135,14 @@ function ImageCard({ image, projectId, navigate, baseUrl }) {
             className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105 group-hover:brightness-110"
           />
         ) : (
-          <div className="flex flex-col items-center gap-2" style={{ opacity: isTif && !imgError ? 0.7 : 0.3 }}>
-            {isTif ? (
-              // GeoTIF icon
-              <>
-                <svg width="38" height="44" viewBox="0 0 38 44" fill="none">
-                  <rect x="1" y="1" width="28" height="36" rx="3" stroke="#666" strokeWidth="1.2" fill="none" />
-                  <path d="M22 1v9h9" stroke="#666" strokeWidth="1.2" />
-                  <rect x="1" y="28" width="36" height="14" rx="3" fill="#1a2a1a" stroke="#3a6a3a" strokeWidth="1" />
-                  <text x="4" y="39" fontFamily="monospace" fontSize="7" fill="#4a9a4a">.TIF</text>
-                </svg>
-                <span className="font-mono text-[10px] uppercase tracking-[0.15em]" style={{ color: '#3a6a3a' }}>GeoRaster</span>
-              </>
-            ) : (
-              <>
-                <svg width="38" height="38" viewBox="0 0 24 24" fill="none">
-                  <rect x="3" y="5" width="18" height="14" rx="2" stroke="#888" strokeWidth="1.2" />
-                  <circle cx="8.5" cy="10" r="1.5" stroke="#888" strokeWidth="1.2" />
-                  <path d="M3 16l5-4 4 3 3-2 6 4" stroke="#888" strokeWidth="1.2" strokeLinejoin="round" />
-                </svg>
-                <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-[#555]">No preview</span>
-              </>
-            )}
+          // Fallback if previewPath is missing or server unreachable
+          <div className="flex flex-col items-center gap-2" style={{ opacity: 0.3 }}>
+            <svg width="38" height="38" viewBox="0 0 24 24" fill="none">
+              <rect x="3" y="5" width="18" height="14" rx="2" stroke="#888" strokeWidth="1.2" />
+              <circle cx="8.5" cy="10" r="1.5" stroke="#888" strokeWidth="1.2" />
+              <path d="M3 16l5-4 4 3 3-2 6 4" stroke="#888" strokeWidth="1.2" strokeLinejoin="round" />
+            </svg>
+            <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-[#555]">No preview</span>
           </div>
         )}
 
@@ -443,10 +433,10 @@ export default function ProjectDetailPage() {
         className="min-h-screen relative z-10"
         style={{ paddingTop: NAVBAR_H, background: 'transparent' }}
       >
-        <div style={{ maxWidth: 1500, margin: '0 auto', paddingLeft: 80, paddingRight: 80, paddingTop: 56, paddingBottom: 80 }}>
+        <div style={{ maxWidth: 1200, margin: '0 auto', paddingLeft: 40, paddingRight: 40, paddingTop: 32, paddingBottom: 48 }}>
 
           {/* Breadcrumbs */}
-          <div className="flex items-center gap-2.5 mb-10">
+          <div className="flex items-center gap-2.5 mb-6">
             <Link
               to="/"
               className="font-mono text-[12px] text-[#404040] transition-colors"
@@ -472,17 +462,17 @@ export default function ProjectDetailPage() {
 
           {/* Project header */}
           <div
-            className="flex items-start justify-between mb-14 pb-10"
+            className="flex items-start justify-between mb-8 pb-6"
             style={{ borderBottom: '1px solid #1c1c1c' }}
           >
             <div>
               <div className="flex items-center gap-4 mb-3">
                 <span className="text-2xl">&#128193;</span>
-                <h1 className="font-mono text-[28px] uppercase tracking-[0.2em] text-white font-bold leading-tight">
+                <h1 className="font-mono text-[20px] uppercase tracking-[0.2em] text-white font-bold leading-tight">
                   {projectName}
                 </h1>
               </div>
-              <p className="font-mono text-[13px] text-[#444444]">
+              <p className="font-mono text-[11px] text-[#444444]">
                 Total Imagery: {images.length} {images.length === 1 ? 'file' : 'files'}
               </p>
             </div>
@@ -490,7 +480,7 @@ export default function ProjectDetailPage() {
             <div className="flex items-center gap-3 flex-shrink-0">
               <button
                 className="flex items-center gap-2 font-mono text-[12px] uppercase tracking-[0.15em] cursor-pointer transition-all duration-150"
-                style={{ background: 'transparent', border: '1px solid #2a2a2a', color: '#737373', padding: '10px 20px', borderRadius: 6 }}
+                style={{ background: 'transparent', border: '1px solid #2a2a2a', color: '#737373', padding: '7px 14px', borderRadius: 6 }}
                 onMouseEnter={(e) => { e.currentTarget.style.borderColor = '#404040'; e.currentTarget.style.color = '#a1a1aa' }}
                 onMouseLeave={(e) => { e.currentTarget.style.borderColor = '#2a2a2a'; e.currentTarget.style.color = '#737373' }}
               >
@@ -499,7 +489,7 @@ export default function ProjectDetailPage() {
               <button
                 onClick={handleDelete}
                 className="flex items-center gap-2 font-mono text-[12px] uppercase tracking-[0.15em] cursor-pointer transition-all duration-150"
-                style={{ background: 'transparent', border: '1px solid #2a2a2a', color: '#555555', padding: '10px 20px', borderRadius: 6 }}
+                style={{ background: 'transparent', border: '1px solid #2a2a2a', color: '#555555', padding: '7px 14px', borderRadius: 6 }}
                 onMouseEnter={(e) => { e.currentTarget.style.borderColor = '#5a2a2a'; e.currentTarget.style.color = '#c97070'; e.currentTarget.style.background = 'rgba(90,42,42,0.12)' }}
                 onMouseLeave={(e) => { e.currentTarget.style.borderColor = '#2a2a2a'; e.currentTarget.style.color = '#555555'; e.currentTarget.style.background = 'transparent' }}
               >
@@ -509,7 +499,7 @@ export default function ProjectDetailPage() {
           </div>
 
           {/* Upload Zone */}
-          <section className="mb-14">
+          <section className="mb-8">
             <SectionLabel icon="&#8679;" text="Upload Zone" />
             <UploadZone onFilesSelected={handleFilesSelected} />
             {pendingFiles.length > 0 && (
@@ -532,7 +522,7 @@ export default function ProjectDetailPage() {
 
             {images.length === 0 ? (
               <div
-                className="flex flex-col items-center justify-center py-24"
+                className="flex flex-col items-center justify-center py-14"
                 style={{ border: '1px dashed #1c1c1c', borderRadius: 12 }}
               >
                 <svg width="48" height="48" viewBox="0 0 24 24" fill="none" className="mb-5">
@@ -540,7 +530,7 @@ export default function ProjectDetailPage() {
                   <circle cx="8.5" cy="10" r="1.5" stroke="#2a2a2a" strokeWidth="1.2" />
                   <path d="M3 16l5-4 4 3 3-2 6 4" stroke="#2a2a2a" strokeWidth="1.2" strokeLinejoin="round" />
                 </svg>
-                <p className="font-mono text-[14px] text-[#383838] tracking-wide">
+                <p className="font-mono text-[12px] text-[#383838] tracking-wide">
                   No imagery yet — upload your first file above.
                 </p>
               </div>
