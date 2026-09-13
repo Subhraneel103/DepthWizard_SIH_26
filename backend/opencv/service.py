@@ -22,9 +22,9 @@ import numpy as np
 from model.depth_infer import DepthModel, normalize_for_display, run_depth_pipeline
 from model.mesh_export import build_mesh_zip
 from model.mesh_geometry import build_heightfield_geometry, downsample_elevation_for_mesh
-from model.preprocess import resize_max_side, tile_image
+from model.preprocess import decode_image_bytes, resize_max_side, tile_image
 
-MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20MB — generous for a phone/drone photo; guards against a runaway upload
+MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # 100MB — accommodates raw satellite rasters/GeoTIFFs as well as standard photos
 TILE_SIZE = 512
 TILE_OVERLAP = 64
 MAX_SIDE = 2048
@@ -65,11 +65,11 @@ def process_image_bytes(
 
     start = time.monotonic()
 
-    np_buffer = np.frombuffer(raw_bytes, dtype=np.uint8)
-    img_bgr = cv2.imdecode(np_buffer, cv2.IMREAD_COLOR)
-    if img_bgr is None:
-        raise InvalidImageError("Could not decode image bytes — is this a valid JPG/PNG?")
-    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    try:
+        img_rgb = decode_image_bytes(raw_bytes)
+    except Exception as e:
+        raise InvalidImageError(str(e))
+
     img_rgb = resize_max_side(img_rgb, max_side=MAX_SIDE)
 
     depth = run_depth_pipeline(img_rgb, model, tile_size=TILE_SIZE, overlap=TILE_OVERLAP)
@@ -144,11 +144,10 @@ def process_mesh_request(
     if elevation.ndim != 2:
         raise InvalidImageError(f"Expected a 2D elevation array, got shape {elevation.shape}")
 
-    np_buffer = np.frombuffer(texture_bytes, dtype=np.uint8)
-    texture_bgr = cv2.imdecode(np_buffer, cv2.IMREAD_COLOR)
-    if texture_bgr is None:
-        raise InvalidImageError("Could not decode texture image bytes — is this a valid JPG/PNG?")
-    texture_rgb = cv2.cvtColor(texture_bgr, cv2.COLOR_BGR2RGB)
+    try:
+        texture_rgb = decode_image_bytes(texture_bytes)
+    except Exception as e:
+        raise InvalidImageError(f"Could not decode texture image bytes: {e}")
 
     # Downsample geometry resolution for a renderable mesh, but keep the
     # GeoTIFF at full elevation resolution — the raster format has no vertex

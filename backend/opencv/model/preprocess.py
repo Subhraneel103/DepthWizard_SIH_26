@@ -11,7 +11,10 @@ Runs entirely on CPU — no PyTorch dependency in this file on purpose, so it ca
 unit-tested without a GPU or any model weights.
 """
 
+import io
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Union
 
 import cv2
 import numpy as np
@@ -26,17 +29,94 @@ class Tile:
     y: int               # top edge, in original-image pixel coordinates
 
 
-def load_image_rgb(path: str) -> np.ndarray:
-    """Load an image from disk and return it as RGB uint8, shape (H, W, 3).
+def decode_image_bytes(raw_bytes: bytes) -> np.ndarray:
+    """Decode raw image bytes (JPG, JPEG, PNG, TIF, TIFF) into an RGB uint8 array (H, W, 3).
 
-    OpenCV's imread returns BGR by default — every downstream consumer
-    (HuggingFace processors, PyTorch models, matplotlib) expects RGB, so we
-    convert immediately and never think about channel order again.
+    Tries OpenCV C++ decoder first for speed. Falls back to PIL and rasterio to support
+    specialized GeoTIFFs, 16-bit rasters, multi-band, and palette images.
     """
-    img_bgr = cv2.imread(path, cv2.IMREAD_COLOR)
-    if img_bgr is None:
-        raise FileNotFoundError(f"OpenCV could not read image at: {path}")
-    return cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    # 1. Fast path: OpenCV
+    np_buf = np.frombuffer(raw_bytes, dtype=np.uint8)
+    img_bgr = cv2.imdecode(np_buf, cv2.IMREAD_COLOR)
+    if img_bgr is not None:
+        return cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+
+    # 2. PIL fallback (TIFF, CMYK, palettes, etc.)
+    try:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(raw_bytes)) as pil_img:
+            return np.array(pil_img.convert("RGB"), dtype=np.uint8)
+    except Exception:
+        pass
+
+    # 3. Rasterio fallback (geospatial GeoTIFF, multi-band, uint16 satellite rasters)
+    try:
+        from rasterio.io import MemoryFile
+
+        with MemoryFile(raw_bytes) as memfile:
+            with memfile.open() as src:
+                if src.count == 1:
+                    arr = src.read(1).astype(np.float32)
+                    arr_min, arr_max = float(arr.min()), float(arr.max())
+                    if arr_max > arr_min:
+                        arr = ((arr - arr_min) / (arr_max - arr_min) * 255.0).astype(np.uint8)
+                    else:
+                        arr = np.zeros(arr.shape, dtype=np.uint8)
+                    return np.stack([arr, arr, arr], axis=-1)
+                else:
+                    bands = [src.read(i) for i in (1, 2, 3)]
+                    rgb = np.stack(bands, axis=-1)
+                    if rgb.dtype != np.uint8:
+                        max_val = max(float(rgb.max()), 1.0)
+                        rgb = (rgb / max_val * 255.0).astype(np.uint8)
+                    return rgb
+    except Exception:
+        pass
+
+    raise ValueError("Could not decode image bytes — expected a valid JPG, JPEG, PNG, TIF, or TIFF image")
+
+
+def load_image_rgb(path: Union[str, Path]) -> np.ndarray:
+    """Load an image from disk (JPG, JPEG, PNG, TIF, TIFF) and return it as RGB uint8 (H, W, 3)."""
+    path_str = str(path)
+    img_bgr = cv2.imread(path_str, cv2.IMREAD_COLOR)
+    if img_bgr is not None:
+        return cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+
+    # Fallback to PIL
+    try:
+        from PIL import Image
+
+        with Image.open(path_str) as pil_img:
+            return np.array(pil_img.convert("RGB"), dtype=np.uint8)
+    except Exception:
+        pass
+
+    # Fallback to rasterio
+    try:
+        import rasterio
+
+        with rasterio.open(path_str) as src:
+            if src.count == 1:
+                arr = src.read(1).astype(np.float32)
+                arr_min, arr_max = float(arr.min()), float(arr.max())
+                if arr_max > arr_min:
+                    arr = ((arr - arr_min) / (arr_max - arr_min) * 255.0).astype(np.uint8)
+                else:
+                    arr = np.zeros(arr.shape, dtype=np.uint8)
+                return np.stack([arr, arr, arr], axis=-1)
+            else:
+                bands = [src.read(i) for i in (1, 2, 3)]
+                rgb = np.stack(bands, axis=-1)
+                if rgb.dtype != np.uint8:
+                    max_val = max(float(rgb.max()), 1.0)
+                    rgb = (rgb / max_val * 255.0).astype(np.uint8)
+                return rgb
+    except Exception:
+        pass
+
+    raise FileNotFoundError(f"Could not read image at: {path_str} (expected JPG, JPEG, PNG, TIF, or TIFF)")
 
 
 def resize_max_side(image: np.ndarray, max_side: int) -> np.ndarray:
