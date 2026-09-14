@@ -1,7 +1,7 @@
 {
   "type": "module",
   "scripts": {
-    "dev": "nodemon -r dotenv/config --experimental-json-modules src/index.js"
+    "dev": "nodemon --max-old-space-size=4096 -r dotenv/config --experimental-json-modules src/index.js"
   },
   "dependencies": {
     "@clerk/express": "^2.1.67",

@@ -143,7 +143,7 @@ export const processImage = asyncHandler(async (req, res) => {
     statusMessage: "Task queued in Redis for processing"
   });
 
-  // Enqueue job for background BullMQ worker
+  // Enqueue job for background BullMQ worker, passing storagePathFinal or storagePath
   await processQueue.add("generate-mesh", {
     jobId: job._id,
     imageId: image._id,
@@ -164,7 +164,6 @@ export const processImage = asyncHandler(async (req, res) => {
     )
   );
 });
-
 // GET /api/images/:imageId/mesh
 export const getImageMesh = asyncHandler(async (req, res) => {
   const { imageId } = req.params;

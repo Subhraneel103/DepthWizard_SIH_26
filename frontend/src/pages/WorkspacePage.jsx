@@ -1,9 +1,12 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '@clerk/clerk-react'
 import { createPortal } from 'react-dom'
 import HeroBackground from '../components/HeroBackground'
 import { fromArrayBuffer } from 'geotiff'
+
+// Code-split the R3F viewport — ~500KB bundle loaded only when mesh layer is active
+const ThreeViewport = lazy(() => import('../components/ThreeViewport'))
 
 const NAVBAR_H = 72
 
@@ -294,9 +297,21 @@ function DsmHeatmapCanvas({ rasterUrl, dsmData, getToken, serverRoot }) {
         const buf  = await res.arrayBuffer()
         const tiff = await fromArrayBuffer(buf)
         const img  = await tiff.getImage()
-        const [band] = await img.readRasters({ interleave: false })
-        const w = img.getWidth()
-        const h = img.getHeight()
+        const origW = img.getWidth()
+        const origH = img.getHeight()
+
+        // ⚡ Cap resolution at 1024 for the heatmap — visually identical on screen
+        // but processes 16× fewer pixels for a 4000×4000 raster
+        const MAX_DIM = 1024
+        const scale = Math.min(1, MAX_DIM / Math.max(origW, origH))
+        const w = Math.round(origW * scale)
+        const h = Math.round(origH * scale)
+        const [band] = await img.readRasters({
+          width: w,
+          height: h,
+          interleave: false,
+          ...(scale < 1 ? { resampleMethod: 'bilinear' } : {}),
+        })
 
         // Use backend stats if available, otherwise scan the band
         let minZ = dsmData?.stats?.minZ ?? dsmData?.minZ ?? Infinity
@@ -451,19 +466,47 @@ function DsmHeatmapCanvas({ rasterUrl, dsmData, getToken, serverRoot }) {
   )
 }
 
-function GridCanvas({ imageUrl, imageState, job, activeLayer, dsmData, getToken, serverRoot }) {
+function GridCanvas({ imageUrl, imageState, job, activeLayer, dsmData, getToken, serverRoot, meshData, gcps, validationReport, waterLevel }) {
   // Derive the raster URL from DSM data (relative path like /uploads/dsm_xxx.tif)
   const rasterUrl = dsmData?.rasterUrl || dsmData?.storagePathGeotiff || null
+  // Derive the mesh URL from meshData
+  const meshUrl = meshData?.meshUrl ? (meshData.meshUrl.startsWith('http') ? meshData.meshUrl : serverRoot + meshData.meshUrl) : null
   return (
     <GlowCard style={{ width: '100%', height: '100%', borderRadius: 20,
       backgroundImage: 'linear-gradient(rgba(255,255,255,0.022) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.022) 1px, transparent 1px)',
       backgroundSize: '44px 44px', background: '#080808' }}>
 
-      {/* edge vignette */}
-      <div className="absolute inset-0 pointer-events-none" style={{
-        background: 'radial-gradient(ellipse 80% 70% at 50% 50%, transparent 38%, rgba(8,8,8,0.94) 100%)',
-        zIndex: 3, borderRadius: 20,
-      }} />
+      {/* edge vignette (only in raw mode — dsm/mesh have their own overlays) */}
+      {activeLayer === 'raw' && (
+        <div className="absolute inset-0 pointer-events-none" style={{
+          background: 'radial-gradient(ellipse 80% 70% at 50% 50%, transparent 38%, rgba(8,8,8,0.94) 100%)',
+          zIndex: 3, borderRadius: 20,
+        }} />
+      )}
+
+      {/* ── 3D MESH layer ── */}
+      {activeLayer === 'mesh' && imageState === 'completed' && (
+        <Suspense fallback={
+          <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4 select-none">
+            <div style={{ width: 36, height: 36, border: '2px solid #1e1e1e', borderTopColor: '#4a8a6a', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+            <span className="font-mono text-[10px] uppercase tracking-[0.22em]" style={{ color: '#404040' }}>Loading 3D viewport…</span>
+          </div>
+        }>
+          <ThreeViewport
+            rasterUrl={rasterUrl}
+            textureUrl={imageUrl}
+            serverRoot={serverRoot}
+            getToken={getToken}
+            waterLevel={waterLevel || 0}
+            showFlood={true}
+            gcps={gcps || []}
+            residuals={validationReport?.residuals || []}
+            showGcps={gcps?.length > 0}
+            minElevation={meshData?.stats?.minElevation ?? dsmData?.stats?.minZ ?? 2}
+            maxElevation={meshData?.stats?.maxElevation ?? dsmData?.stats?.maxZ ?? 49}
+          />
+        </Suspense>
+      )}
 
       {/* ── DSM HEATMAP layer ── */}
       {activeLayer === 'dsm' && (
@@ -475,8 +518,8 @@ function GridCanvas({ imageUrl, imageState, job, activeLayer, dsmData, getToken,
         />
       )}
 
-      {/* ── RAW 2D / COMPLETED MESH image (shown when not in DSM mode) ── */}
-      {activeLayer !== 'dsm' && imageState === 'idle' && (
+      {/* ── RAW 2D image (only shown in raw layer mode) ── */}
+      {activeLayer === 'raw' && imageState === 'idle' && (
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-6">
           {imageUrl ? (
             <div className="relative" style={{ maxWidth: '65%' }}>
@@ -501,7 +544,7 @@ function GridCanvas({ imageUrl, imageState, job, activeLayer, dsmData, getToken,
         </div>
       )}
 
-      {activeLayer !== 'dsm' && imageState === 'processing' && (
+      {activeLayer === 'raw' && imageState === 'processing' && (
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-8 select-none">
           <div className="flex flex-col items-center gap-5">
             <span className="text-5xl" style={{ animation: 'spin 3s linear infinite', display: 'inline-block' }}>⚙️</span>
@@ -521,7 +564,7 @@ function GridCanvas({ imageUrl, imageState, job, activeLayer, dsmData, getToken,
         </div>
       )}
 
-      {activeLayer !== 'dsm' && imageState === 'completed' && (
+      {activeLayer === 'raw' && imageState === 'completed' && (
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-5 select-none">
           {imageUrl ? (
             <div className="relative" style={{ maxWidth: '65%' }}>
@@ -547,14 +590,17 @@ function GridCanvas({ imageUrl, imageState, job, activeLayer, dsmData, getToken,
         </div>
       )}
 
-      {/* ── Spatial overlay — bottom left ── */}
+      {/* ── Spatial overlay — bottom left (hidden in dsm/mesh modes which have their own HUD) ── */}
+      {activeLayer === 'raw' && (
       <div className="absolute z-20 font-mono select-none" style={{ bottom: 20, left: 24 }}>
         <div className="text-[9px] uppercase tracking-[0.22em] mb-1.5" style={{ color: '#242424' }}>Spatial Data</div>
         <div className="text-[11px] mb-0.5" style={{ color: '#2c2c2c' }}>X: 28.6134° &nbsp; Y: 77.2090° &nbsp; Z: {imageState === 'completed' ? '21.4' : '—'} m</div>
         <div className="text-[11px]" style={{ color: '#2c2c2c' }}>GSD: {imageState === 'completed' ? '0.50' : '—'} cm/px &nbsp;·&nbsp; CRS: EPSG:4326</div>
       </div>
+      )}
 
-      {/* ── Status badge — top right ── */}
+      {/* ── Status badge — top right (hidden in dsm/mesh modes which have their own badges) ── */}
+      {activeLayer === 'raw' && (
       <div className="absolute z-20" style={{ top: 16, right: 16 }}>
         <div className="font-mono text-[10px] uppercase tracking-[0.18em] px-3 py-1.5" style={{
           border: '1px solid', borderRadius: 8,
@@ -565,6 +611,7 @@ function GridCanvas({ imageUrl, imageState, job, activeLayer, dsmData, getToken,
           {imageState === 'completed' ? '● Completed' : imageState === 'processing' ? '◌ Processing' : '○ Idle'}
         </div>
       </div>
+      )}
 
       <style>{'@keyframes spin { to { transform: rotate(360deg); } }'}</style>
     </GlowCard>
@@ -1194,6 +1241,10 @@ export default function WorkspacePage() {
               dsmData={dsmData}
               getToken={getToken}
               serverRoot={baseUrl.replace(/\/api\/?$/, '').replace(/\/$/, '')}
+              meshData={meshData}
+              gcps={gcps}
+              validationReport={validationReport}
+              waterLevel={waterLevel}
             />
           </div>
 

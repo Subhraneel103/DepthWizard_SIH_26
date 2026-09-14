@@ -1,9 +1,9 @@
-import { Worker } from "bullmq";
 import fs from "fs";
 import path from "path";
 import Job from "../models/Jobs.model.js";
 import Image from "../models/Images.model.js";
 import DsmResult from "../models/DsmResults.model.js";
+import { Worker } from "bullmq";
 
 const connection = { host: "127.0.0.1", port: 6379 };
 
@@ -13,7 +13,6 @@ const worker = new Worker("3d-processing", async (bullJob) => {
     const { jobId, imageId, storagePath } = bullJob.data;
     console.log(`[Worker] Picked up job ${jobId} for image ${imageId}`);
 
-    // 1. Preprocessing
     await Job.findByIdAndUpdate(jobId, { 
         status: "active", 
         stage: "preprocess", 
@@ -22,7 +21,6 @@ const worker = new Worker("3d-processing", async (bullJob) => {
     });
     await sleep(2000);
 
-    // 2. Depth Inference
     await Job.findByIdAndUpdate(jobId, { 
         stage: "depth_inference", 
         progress: 45, 
@@ -30,7 +28,6 @@ const worker = new Worker("3d-processing", async (bullJob) => {
     });
     await sleep(3500);
 
-    // 3. Mesh Generation
     await Job.findByIdAndUpdate(jobId, { 
         stage: "mesh_generation", 
         progress: 80, 
@@ -49,20 +46,58 @@ const worker = new Worker("3d-processing", async (bullJob) => {
     const absoluteDsmPath = path.join(uploadDir, dsmFilename);
     const absoluteMeshPath = path.join(uploadDir, meshFilename);
 
-    // Copy the actual valid uploaded raw .tif file so geotiff.js can parse its binary headers successfully
     const sourceTifPath = path.resolve(process.cwd(), "public", storagePath ? storagePath.replace(/^\//, "") : "");
     if (fs.existsSync(sourceTifPath)) {
         fs.copyFileSync(sourceTifPath, absoluteDsmPath);
     } else {
-        // Absolute fallback if source is missing
         fs.writeFileSync(absoluteDsmPath, "SIMULATED_DSM_GEOTIFF_DATA");
     }
 
+    // FIX: Provide a valid minimal binary GLTF header so Three.js GLTFLoader doesn't crash on JSON parsing
     if (!fs.existsSync(absoluteMeshPath)) {
-        fs.writeFileSync(absoluteMeshPath, "SIMULATED_3D_MESH_DATA");
+        const dummyGltfJson = JSON.stringify({
+            asset: { version: "2.0", generator: "GeospatialPlatformMock" },
+            scenes: [{ nodes: [0] }],
+            nodes: [{ mesh: 0 }],
+            meshes: [{ primitives: [{ attributes: { POSITION: 0 }, indices: 1 }] }],
+            accessors: [
+                { bufferView: 0, componentType: 5126, count: 3, type: "VEC3" },
+                { bufferView: 1, componentType: 5123, count: 3, type: "SCALAR" }
+            ],
+            bufferViews: [
+                { buffer: 0, byteLength: 36, byteOffset: 0 },
+                { buffer: 0, byteLength: 6, byteOffset: 36 }
+            ],
+            buffers: [{ byteLength: 44 }]
+        });
+        
+        // Write out a valid GLB container structure (GLTF binary format chunk)
+        const jsonBuffer = Buffer.from(dummyGltfJson);
+        const paddingLength = (4 - (jsonBuffer.length % 4)) % 4;
+        const paddedJson = Buffer.concat([jsonBuffer, Buffer.alloc(paddingLength, 0x20)]);
+        
+        const binBuffer = Buffer.alloc(44, 0); // 36 bytes for 3 vec3 vertices + 6 bytes for indices + padding
+        const binPaddingLength = (4 - (binBuffer.length % 4)) % 4;
+        const paddedBin = Buffer.concat([binBuffer, Buffer.alloc(binPaddingLength, 0x00)]);
+
+        const totalLength = 12 + 8 + paddedJson.length + 8 + paddedBin.length;
+        const glbHeader = Buffer.alloc(12);
+        glbHeader.writeUInt32LE(0x46546C67, 0); // "glTF"
+        glbHeader.writeUInt32LE(2, 4);         // Version 2
+        glbHeader.writeUInt32LE(totalLength, 8);
+
+        const chunk1Header = Buffer.alloc(8);
+        chunk1Header.writeUInt32LE(paddedJson.length, 0);
+        chunk1Header.writeUInt32LE(0x4E4F534A, 4); // JSON chunk
+
+        const chunk2Header = Buffer.alloc(8);
+        chunk2Header.writeUInt32LE(paddedBin.length, 0);
+        chunk2Header.writeUInt32LE(0x004E4942, 4); // BIN chunk
+
+        const glbFileBuffer = Buffer.concat([glbHeader, chunk1Header, paddedJson, chunk2Header, paddedBin]);
+        fs.writeFileSync(absoluteMeshPath, glbFileBuffer);
     }
 
-    // 4. Finalize & Save DsmResult
     const result = await DsmResult.create({
         image: imageId,
         storagePathGeotiff: `/uploads/${dsmFilename}`,
@@ -74,14 +109,12 @@ const worker = new Worker("3d-processing", async (bullJob) => {
         faceCount: 30000,
     });
 
-    // 5. Update original image pointers
     await Image.findByIdAndUpdate(imageId, {
         meshUrl: result.storagePathMesh,
         dsmUrl: result.storagePathGeotiff,
         status: "completed"
     });
 
-    // 6. Complete Job
     await Job.findByIdAndUpdate(jobId, { 
         status: "completed", 
         stage: "finalizing", 

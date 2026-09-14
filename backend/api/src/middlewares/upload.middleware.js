@@ -21,7 +21,9 @@ const storage = multer.diskStorage({
     }
 });
 
-// 3. Export the Multer middleware
-// Note: Ensure "file" matches the exact FormData key your React app uses. 
-// If your React app uses formData.append("image", file), change "file" to "image" here.
-export const uploadImageHandler = multer({ storage }).single("image");
+// 3. Export the Multer middleware with file size limits (e.g., 50MB) 
+// to prevent memory exhaustion crashes when handling large 17MB+ rasters.
+export const uploadImageHandler = multer({ 
+    storage,
+    limits: { fileSize: 50 * 1024 * 1024 } // 50MB max file size
+}).single("image");
